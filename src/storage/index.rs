@@ -41,7 +41,8 @@ impl LibraryIndex {
         }
 
         let cache_path = self.cache_path.clone();
-        let music_dir = music_dir.to_path_buf();
+        // Canonicalize music_dir for reliable prefix matching
+        let music_dir = music_dir.canonicalize().unwrap_or_else(|_| music_dir.to_path_buf());
 
         let (tracks_map, playlists) = tokio::task::spawn_blocking(move || {
             let mut cache: LibraryCache = std::fs::read_to_string(&cache_path)
@@ -136,7 +137,8 @@ impl LibraryIndex {
         }
 
         let cache_path = self.cache_path.clone();
-        let music_dir = music_dir.to_path_buf();
+        // Canonicalize music_dir for reliable prefix matching
+        let music_dir = music_dir.canonicalize().unwrap_or_else(|_| music_dir.to_path_buf());
 
         let (tracks_map, playlists) = tokio::task::spawn_blocking(move || {
             let mut cache: LibraryCache = if cache_path.exists() {

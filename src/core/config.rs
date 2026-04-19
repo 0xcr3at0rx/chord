@@ -160,7 +160,15 @@ impl Settings {
     fn load_config(&self, path: &Path) -> Result<()> {
         if path.exists() {
             let content = fs::read_to_string(path)?;
-            if let Ok(config) = toml::from_str::<Config>(&content) {
+            if let Ok(mut config) = toml::from_str::<Config>(&content) {
+                // Expand ~ in music_dir if present
+                if config.library.music_dir.to_string_lossy().starts_with("~") {
+                    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+                        let path_str = config.library.music_dir.to_string_lossy().to_string();
+                        config.library.music_dir = home.join(&path_str[2..]);
+                    }
+                }
+                
                 let mut guard = self.config.write().unwrap();
                 *guard = config;
             }

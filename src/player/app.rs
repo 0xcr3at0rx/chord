@@ -123,6 +123,8 @@ pub struct App {
     pub refresh_tx: mpsc::UnboundedSender<()>,
     /// Flag to indicate that the UI needs to be redrawn in the next frame.
     pub needs_redraw: bool,
+    /// A dynamic clock that advances based on audio energy for better visualizer sync.
+    pub audio_clock: f64,
 }
 
 impl App {
@@ -245,6 +247,7 @@ impl App {
             refresh_rx,
             refresh_tx,
             needs_redraw: true,
+            audio_clock: 0.0,
         })
     }
 
@@ -477,6 +480,14 @@ impl App {
     }
 
     pub async fn update(&mut self) {
+        // Update audio clock for visualizer (only when playing)
+        if self.is_playing {
+            let amp = self.audio.get_amplitude() as f64;
+            // Base speed + energy-based modulation
+            let speed = 0.05 + (amp * 2.0);
+            self.audio_clock += speed;
+        }
+
         // Drain refresh signals
         while self.refresh_rx.try_recv().is_ok() {
             self.refresh_library().await;

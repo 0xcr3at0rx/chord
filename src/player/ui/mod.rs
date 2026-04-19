@@ -83,7 +83,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     // 1. SIDEBAR & 2. MAIN AREA
     {
         let is_search = app.input_mode == InputMode::Search;
-        let effective_mode = if is_search { app.previous_mode } else { app.input_mode };
+        let effective_mode = if is_search {
+            app.previous_mode
+        } else {
+            app.input_mode
+        };
 
         if effective_mode == InputMode::PlaylistSelect {
             let mut items = vec![ListItem::new(Line::from(vec![
@@ -102,7 +106,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg)),
+                        .border_style(Style::default().fg(app.theme.status_bg))
+                        .title(Line::from(vec![
+                            Span::styled(" SELECT ", Style::default().bg(Color::Magenta).fg(app.theme.bg)),
+                            Span::raw(" "),
+                            Span::styled("CONTEXT", Style::default().fg(app.theme.dim)),
+                        ])),
                 )
                 .highlight_style(
                     Style::default()
@@ -110,7 +119,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .fg(app.theme.cursor_fg),
                 );
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.playlist_list_state);
-        } else if effective_mode == InputMode::Online || effective_mode == InputMode::CountrySelect {
+        }
+ else if effective_mode == InputMode::Online || effective_mode == InputMode::CountrySelect
+        {
             if effective_mode == InputMode::CountrySelect {
                 let mut items = vec![ListItem::new(Line::from(vec![
                     Span::styled("  ", Style::default()),
@@ -143,10 +154,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             } else {
                 let mut items = Vec::new();
                 for station in &app.filtered_stations {
-                    let is_playing = app.current_track.as_ref()
+                    let is_playing = app
+                        .current_track
+                        .as_ref()
                         .map(|t| t.track_id == "radio" && t.title == station.name)
                         .unwrap_or(false);
-                    
+
                     let style = if is_playing {
                         Style::default()
                             .fg(app.theme.accent)
@@ -156,7 +169,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     };
 
                     let indicator = if is_playing {
-                        if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                        if app.is_playing {
+                            " 󰐊 "
+                        } else {
+                            " 󰏤 "
+                        }
                     } else {
                         "   "
                     };
@@ -166,9 +183,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                             Span::styled(indicator, style),
                             Span::styled(format!("{}", station.name), style),
                         ]),
-                        Line::from(vec![
-                            Span::styled(format!("    {} ", station.country), Style::default().fg(app.theme.dim)),
-                        ]),
+                        Line::from(vec![Span::styled(
+                            format!("    {} ", station.country),
+                            Style::default().fg(app.theme.dim),
+                        )]),
                         Line::from(""),
                     ]));
                 }
@@ -234,12 +252,17 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
                 }
             }
-        }
- else if app.filtered_tracks.is_empty() {
+        } else if app.filtered_tracks.is_empty() {
             let (title, msg) = if !app.search_query.is_empty() {
-                ("  NO RESULTS FOUND  ", format!("  No tracks match '{}'", app.search_query))
+                (
+                    "  NO RESULTS FOUND  ",
+                    format!("  No tracks match '{}'", app.search_query),
+                )
             } else {
-                ("  LIBRARY IS EMPTY  ", "  Add music files and press 'r' to scan.".to_string())
+                (
+                    "  LIBRARY IS EMPTY  ",
+                    "  Add music files and press 'r' to scan.".to_string(),
+                )
             };
 
             let empty_msg = vec![
@@ -299,7 +322,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     };
 
                     let indicator = if is_playing {
-                        if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                        if app.is_playing {
+                            " 󰐊 "
+                        } else {
+                            " 󰏤 "
+                        }
                     } else {
                         "   "
                     };
@@ -323,7 +350,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .borders(Borders::RIGHT)
                         .border_style(Style::default().fg(app.theme.status_bg))
                         .title(Line::from(vec![
-                            Span::styled(" OFFLINE ", Style::default().bg(app.theme.dim).fg(app.theme.bg)),
+                            Span::styled(
+                                " OFFLINE ",
+                                Style::default().bg(app.theme.dim).fg(app.theme.bg),
+                            ),
                             Span::raw(" "),
                             Span::styled("LIBRARY", Style::default().fg(app.theme.dim)),
                         ])),
@@ -490,18 +520,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let vis_width = vis_area.width.saturating_sub(4);
             let vis_height = vis_area.height;
 
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_millis() as u64;
-
             let visualizer_mode = app.settings.config.read().unwrap().audio.visualizer;
             let real_vol = app.audio.get_amplitude() as f64;
             let vis_lines = render_visualizer(
                 app.is_playing,
                 vis_width,
                 vis_height,
-                now,
+                (app.audio_clock * 100.0) as u64,
                 real_vol,
                 &app.theme,
                 visualizer_mode,
@@ -739,9 +764,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let mid_text = if app.input_mode == InputMode::Search {
         format!(" / {} ", app.search_query)
     } else if app.input_mode == InputMode::Online {
-        " ONLINE - STATIONS ".to_string()
+        " STATIONS ".to_string()
     } else if app.input_mode == InputMode::CountrySelect {
-        " ONLINE - SELECT COUNTRY ".to_string()
+        " SELECT COUNTRY ".to_string()
     } else if let Some(track) = &app.current_track {
         format!(" Playing: {} - {} ", track.artist, track.title)
     } else {

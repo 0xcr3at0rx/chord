@@ -1,17 +1,5 @@
 pub const DEFAULT_RADIOS: &[(&str, &str, &str, &str)] = &[
     (
-        "BBC Radio 1",
-        "http://stream.live.vc.bbc.co.uk/bbc_radio_one_offline",
-        "UK",
-        "Pop, Top 40",
-    ),
-    (
-        "BBC Radio 6 Music",
-        "http://stream.live.vc.bbc.co.uk/bbc_6music_offline",
-        "UK",
-        "Alternative, Indie",
-    ),
-    (
         "SomaFM Groove Salad",
         "http://ice1.somafm.com/groovesalad-128-mp3",
         "USA",

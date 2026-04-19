@@ -190,9 +190,9 @@ impl App {
         }
 
         let theme = settings.config.read().unwrap().theme.to_theme();
-        let initial_mode = settings.config.read().unwrap().library.last_mode;
+        let initial_mode = InputMode::Online;
 
-        Ok(App {
+        let mut app = App {
             all_tracks: tracks.clone(),
             filtered_tracks: tracks,
             playlists,
@@ -248,7 +248,10 @@ impl App {
             refresh_tx,
             needs_redraw: true,
             audio_clock: 0.0,
-        })
+        };
+
+        app.load_radio_stations();
+        Ok(app)
     }
 
     pub async fn select_playlist(&mut self, playlist: Option<Playlist>) {

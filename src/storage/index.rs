@@ -63,10 +63,11 @@ impl LibraryIndex {
             }
 
             let mut music_folders = std::collections::HashSet::new();
+            let canonical_music_dir = music_dir.canonicalize().unwrap_or_else(|_| music_dir.clone());
             for path_str in cache.tracks.keys() {
                 let path = Path::new(path_str);
                 if let Some(parent) = path.parent() {
-                    if let Ok(rel_path) = parent.strip_prefix(&music_dir) {
+                    if let Ok(rel_path) = parent.strip_prefix(&canonical_music_dir) {
                         if rel_path.as_os_str() != "" {
                             music_folders.insert(rel_path.to_path_buf());
                         }
@@ -155,7 +156,8 @@ impl LibraryIndex {
             let mut pending_files = Vec::new();
 
             // 1. Scan Disk recursively for music files
-            for entry in WalkDir::new(&music_dir).into_iter().filter_map(|e| e.ok()) {
+            let canonical_music_dir = music_dir.canonicalize().unwrap_or_else(|_| music_dir.clone());
+            for entry in WalkDir::new(&canonical_music_dir).into_iter().filter_map(|e| e.ok()) {
                 if entry.file_type().is_file() {
                     let path = entry.path();
                     let ext = path
@@ -170,7 +172,7 @@ impl LibraryIndex {
 
                         // Track the folder this music file is in
                         if let Some(parent) = path.parent() {
-                            if let Ok(rel_path) = parent.strip_prefix(&music_dir) {
+                            if let Ok(rel_path) = parent.strip_prefix(&canonical_music_dir) {
                                 if rel_path.as_os_str() != "" {
                                     music_folders.insert(rel_path.to_path_buf());
                                 }

@@ -27,14 +27,13 @@ Just run the `chord` command. The app will automatically scan your `music_dir` f
 | `j` / `k` | Navigate lists |
 | `Enter` | Play selection (in Library/Radio) |
 | `Space` / `p` | Pause / Resume |
-| `Tab` | Toggle Setting (in Config) / Context Select (Library/Radio) |
-| `Ctrl + c` | Configuration Menu (Settings) |
+| `Tab` | Context Select (Library/Radio) |
 | `Ctrl + r` | Radio Mode |
 | `Esc` | Return to Normal Mode |
 
 ## Configuration
 
-Settings are located in `~/.config/chord/config.toml`.
+Settings are managed in `~/.config/chord/config.toml`. Changes to this file take effect on the next startup.
 
 ### High-Fidelity Audio Setup
 ```toml

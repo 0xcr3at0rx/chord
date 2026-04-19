@@ -459,6 +459,23 @@ impl App {
         let _ = self.settings.save_config(&config_file);
     }
 
+    pub async fn save_config_silent(&self) {
+        {
+            let mut config = self.settings.config.write().unwrap();
+            config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
+            config.audio.volume = self.volume;
+            config.audio.mode = self.audio.mode.lock().unwrap().clone();
+
+            // Only persist 'real' modes, not temporary selection menus
+            if self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online {
+                config.library.last_mode = self.input_mode;
+            }
+        };
+
+        let config_file = self.settings.config_dir.join("config.toml");
+        let _ = self.settings.save_config(&config_file);
+    }
+
     pub async fn update(&mut self) {
         // Drain refresh signals
         while self.refresh_rx.try_recv().is_ok() {
@@ -737,7 +754,7 @@ impl App {
             let mut config = self.settings.config.write().unwrap();
             config.audio.visualizer = config.audio.visualizer.next();
         }
-        self.save_config().await;
+        self.save_config_silent().await;
         self.needs_redraw = true;
     }
 

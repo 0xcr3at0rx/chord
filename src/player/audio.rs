@@ -169,7 +169,7 @@ where
         // Simple exponential moving average for smoothing
         let current_bits = self.amplitude.load(std::sync::atomic::Ordering::Relaxed);
         let current = f32::from_bits(current_bits);
-        let new_val = current * 0.98 + val * 0.02; // Slower decay for smoother visuals
+        let new_val = current * 0.85 + val * 0.15; // More responsive visuals
         self.amplitude
             .store(new_val.to_bits(), std::sync::atomic::Ordering::Relaxed);
 

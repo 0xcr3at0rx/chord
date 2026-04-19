@@ -128,7 +128,7 @@ pub fn render_visualizer(
     }
 
     let time = seed as f64 / 100.0;
-    let vol = (amplitude * 18.0).clamp(0.05, 3.0);
+    let vol = (amplitude * 22.0).clamp(0.05, 3.5);
 
     for y_row in 0..height {
         let mut spans = Vec::new();
@@ -201,9 +201,7 @@ pub fn render_visualizer(
                     let speed = 5.0 + vol * 12.0;
                     let trail = (x * 17.0 + time * speed) % 20.0;
                     let dist = ((1.0 - norm_y) * 20.0 - trail).abs();
-                    let matrix_green = Color::Rgb(0, 255, 70);
-                    let matrix_dim = Color::Rgb(0, 100, 30);
-                    let color = interpolate_color(matrix_dim, matrix_green, 1.0 - (dist / 2.5).min(1.0));
+                    let color = interpolate_color(theme.dim, theme.accent, 1.0 - (dist / 2.5).min(1.0));
                     (
                         dist < 2.5,
                         if dist < 1.0 { 4 } else { 2 },
@@ -240,7 +238,7 @@ pub fn render_visualizer(
                     let p1_x = 0.5 + a1.cos() * r * 1.6;
                     let p1_y = 0.5 + a1.sin() * r;
                     let p2_x = 0.5 + a2.cos() * r * 2.0;
-                    let p2_y = 0.5 + a2.sin() * r * 0.8;
+                    let p2_y = 0.5 + a2.sin() * r * 0.9;
                     let d1 = ((norm_x - p1_x).powi(2) * 3.5 + (norm_y - p1_y).powi(2)).sqrt();
                     let d2 = ((norm_x - p2_x).powi(2) * 3.5 + (norm_y - p2_y).powi(2)).sqrt();
                     let color = interpolate_color(theme.accent, theme.critical, (a1.sin() * 0.5 + 0.5).abs());
@@ -272,8 +270,8 @@ pub fn render_visualizer(
                 VisualizerMode::Rain => {
                     let drop = (x * 123.456 + time * 6.0) % 1.6;
                     let dist = ((1.0 - norm_y) - drop).abs();
-                    let rain_color = Color::Rgb(100, 150, 255);
-                    (dist < 0.12, 3, [" ", " ", "·", "│", "┃"], Some(rain_color))
+                    let color = interpolate_color(theme.bg, theme.accent_dim, (1.0 - dist / 0.12).min(1.0));
+                    (dist < 0.12, 3, [" ", " ", "·", "│", "┃"], Some(color))
                 }
                 VisualizerMode::BarsOutline => {
                     let h = ((x * 0.35 + time * 1.2).sin().abs()) * vol * envelope;
@@ -285,8 +283,8 @@ pub fn render_visualizer(
                     let cx = (norm_x * 18.0).floor();
                     let cy = (norm_y * 9.0).floor();
                     let v = ((cx * 0.55 + time).sin() * (cy * 0.55).cos()).abs() * vol;
-                    let brick_color = interpolate_color(Color::Rgb(150, 50, 50), Color::Rgb(255, 100, 80), v.min(1.0));
-                    (v > 0.35, 4, [" ", " ", "▞", "▚", "■"], Some(brick_color))
+                    let color = interpolate_color(theme.dim, theme.critical, v.min(1.0));
+                    (v > 0.35, 4, [" ", " ", "▞", "▚", "■"], Some(color))
                 }
                 VisualizerMode::Columns => {
                     let cx = (norm_x * 24.0).floor();
@@ -313,16 +311,12 @@ pub fn render_visualizer(
                 }
                 VisualizerMode::Flame => {
                     let f = ((x * 0.12).sin() + (time * 6.0)).cos().abs() * vol * (1.1 - norm_y);
-                    let flame_red = Color::Rgb(255, 50, 0);
-                    let flame_yellow = Color::Rgb(255, 240, 0);
-                    let color = interpolate_color(flame_red, flame_yellow, (norm_y / f.max(0.1)).min(1.0));
+                    let color = interpolate_color(theme.critical, theme.accent, (norm_y / f.max(0.1)).min(1.0));
                     (norm_y < f, 4, [" ", " ", "░", "▒", "▓"], Some(color))
                 }
                 VisualizerMode::Retro => {
                     let v = ((x * 0.12 + time).sin() * 6.0 + (norm_y * 6.0)).floor() % 2.0;
-                    let retro_pink = Color::Rgb(255, 0, 150);
-                    let retro_cyan = Color::Rgb(0, 255, 255);
-                    let color = interpolate_color(retro_pink, retro_cyan, norm_x);
+                    let color = interpolate_color(theme.critical, theme.accent, norm_x);
                     (v == 0.0 && vol > 0.35, 4, [" ", " ", " ", " ", "〓"], Some(color))
                 }
                 VisualizerMode::Binary => {
@@ -337,9 +331,7 @@ pub fn render_visualizer(
                 }
                 VisualizerMode::Sakura => {
                     let drift = (x * 0.12 + time * 0.8 + norm_y).sin().abs();
-                    let sakura_pink = Color::Rgb(255, 180, 200);
-                    let sakura_white = Color::Rgb(255, 240, 245);
-                    let color = interpolate_color(sakura_pink, sakura_white, drift);
+                    let color = interpolate_color(theme.accent_dim, theme.fg, drift);
                     (drift > 0.88 && vol > 0.25, 4, [" ", " ", " ", " ", "∗"], Some(color))
                 }
                 VisualizerMode::Firework => {
@@ -354,8 +346,8 @@ pub fn render_visualizer(
                 VisualizerMode::Bubbles => {
                     let bx = (x * 0.55 + time * 1.2).cos().abs();
                     let dist = (norm_y - bx).abs();
-                    let bubble_color = Color::Rgb(180, 220, 255);
-                    (dist < 0.12 * vol, 4, [" ", " ", " ", " ", "○"], Some(bubble_color))
+                    let color = interpolate_color(theme.dim, theme.accent_dim, (1.0 - dist / 0.12).min(1.0));
+                    (dist < 0.12 * vol, 4, [" ", " ", " ", " ", "○"], Some(color))
                 }
                 VisualizerMode::Logo => (
                     (norm_x - 0.5).abs() < 0.22 && (norm_y - 0.5).abs() < 0.22 * vol,
@@ -365,12 +357,12 @@ pub fn render_visualizer(
                 ),
                 VisualizerMode::Terrain => {
                     let h = ((x * 0.12 + time).sin() * (x * 0.22 - time).cos()).abs() * vol;
-                    let color = interpolate_color(Color::Rgb(30, 100, 30), Color::Rgb(100, 200, 100), (norm_y / h.max(0.1)).min(1.0));
+                    let color = interpolate_color(theme.dim, theme.accent, (norm_y / h.max(0.1)).min(1.0));
                     (norm_y < h, 4, [" ", " ", " ", " ", "▴"], Some(color))
                 }
                 VisualizerMode::Glitch => {
                     let g = (time * 25.0).sin() > 0.96;
-                    let glitch_color = if (time * 50.0).cos() > 0.0 { Color::Cyan } else { Color::Magenta };
+                    let glitch_color = if (time * 50.0).cos() > 0.0 { theme.accent } else { theme.critical };
                     (g && vol > 0.25, 4, [" ", " ", " ", " ", "▙"], Some(glitch_color))
                 }
                 VisualizerMode::Scope => {
@@ -391,12 +383,12 @@ pub fn render_visualizer(
                 }
                 VisualizerMode::Butterfly => {
                     let wing = (x * 0.12 + time * 1.5).sin() * (norm_y - 0.5);
-                    let color = interpolate_color(Color::Rgb(200, 100, 255), Color::Rgb(100, 200, 255), norm_x);
+                    let color = interpolate_color(theme.critical, theme.accent, norm_x);
                     (wing.abs() < 0.12 * vol, 4, [" ", " ", " ", " ", "∞"], Some(color))
                 }
                 VisualizerMode::Lightning => {
                     let l = (time * 12.0).sin() > 0.985;
-                    let color = Color::Rgb(200, 200, 255);
+                    let color = theme.fg;
                     (
                         l && (norm_x - 0.5).abs() < 0.06 * vol,
                         4,

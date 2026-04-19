@@ -143,17 +143,32 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             } else {
                 let mut items = Vec::new();
                 for station in &app.filtered_stations {
+                    let is_playing = app.current_track.as_ref()
+                        .map(|t| t.track_id == "radio" && t.title == station.name)
+                        .unwrap_or(false);
+                    
+                    let style = if is_playing {
+                        Style::default()
+                            .fg(app.theme.accent)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(app.theme.accent)
+                    };
+
+                    let indicator = if is_playing {
+                        if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                    } else {
+                        "   "
+                    };
+
                     items.push(ListItem::new(vec![
-                        Line::from(vec![Span::styled(
-                            format!("  {} ", station.name),
-                            Style::default()
-                                .fg(app.theme.accent)
-                                .add_modifier(Modifier::BOLD),
-                        )]),
-                        Line::from(vec![Span::styled(
-                            format!("    {} ", station.country),
-                            Style::default().fg(app.theme.dim),
-                        )]),
+                        Line::from(vec![
+                            Span::styled(indicator, style),
+                            Span::styled(format!("{}", station.name), style),
+                        ]),
+                        Line::from(vec![
+                            Span::styled(format!("    {} ", station.country), Style::default().fg(app.theme.dim)),
+                        ]),
                         Line::from(""),
                     ]));
                 }
@@ -283,9 +298,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         Style::default().fg(app.theme.fg)
                     };
 
+                    let indicator = if is_playing {
+                        if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                    } else {
+                        "   "
+                    };
+
                     ListItem::new(vec![
                         Line::from(vec![
-                            Span::styled(if is_playing { "> " } else { "  " }, style),
+                            Span::styled(indicator, style),
                             Span::styled(&t.title, style),
                         ]),
                         Line::from(vec![
@@ -300,7 +321,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg)),
+                        .border_style(Style::default().fg(app.theme.status_bg))
+                        .title(Line::from(vec![
+                            Span::styled(" OFFLINE ", Style::default().bg(app.theme.dim).fg(app.theme.bg)),
+                            Span::raw(" "),
+                            Span::styled("LIBRARY", Style::default().fg(app.theme.dim)),
+                        ])),
                 )
                 .highlight_style(
                     Style::default()

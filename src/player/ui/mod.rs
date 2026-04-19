@@ -82,7 +82,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     // 1. SIDEBAR & 2. MAIN AREA
     {
-        if app.input_mode == InputMode::PlaylistSelect {
+        let is_search = app.input_mode == InputMode::Search;
+        let effective_mode = if is_search { app.previous_mode } else { app.input_mode };
+
+        if effective_mode == InputMode::PlaylistSelect {
             let mut items = vec![ListItem::new(Line::from(vec![
                 Span::styled("  ", Style::default()),
                 Span::styled("All ( Library )", Style::default()),
@@ -107,167 +110,132 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .fg(app.theme.cursor_fg),
                 );
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.playlist_list_state);
-        } else if app.input_mode == InputMode::Config {
-            let mut items = Vec::new();
-            let config = app.settings.config.read().unwrap();
-            for field in &app.config_fields {
-                let (label, value) = match field {
-                    crate::player::app::ConfigField::MusicDir => (
-                        "Music Dir",
-                        format!("{}", config.library.music_dir.display()),
+        } else if effective_mode == InputMode::Radio || effective_mode == InputMode::CountrySelect {
+            if effective_mode == InputMode::CountrySelect {
+                let mut items = vec![ListItem::new(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled("All Radios", Style::default()),
+                ]))];
+
+                for country in &app.radio_countries {
+                    items.push(ListItem::new(Line::from(vec![
+                        Span::styled("  ", Style::default()),
+                        Span::styled(country, Style::default()),
+                    ])));
+                }
+
+                let sidebar = List::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::RIGHT)
+                            .border_style(Style::default().fg(app.theme.status_bg))
+                            .title(Line::from(vec![Span::styled(
+                                " SELECT COUNTRY ",
+                                Style::default().bg(Color::Magenta).fg(app.theme.bg),
+                            )])),
+                    )
+                    .highlight_style(
+                        Style::default()
+                            .bg(app.theme.cursor_bg)
+                            .fg(app.theme.cursor_fg),
+                    );
+                f.render_stateful_widget(sidebar, content_layout[0], &mut app.country_list_state);
+            } else {
+                let mut items = Vec::new();
+                for station in &app.filtered_stations {
+                    items.push(ListItem::new(vec![
+                        Line::from(vec![Span::styled(
+                            format!("  {} ", station.name),
+                            Style::default()
+                                .fg(app.theme.accent)
+                                .add_modifier(Modifier::BOLD),
+                        )]),
+                        Line::from(vec![Span::styled(
+                            format!("    {} ", station.country),
+                            Style::default().fg(app.theme.dim),
+                        )]),
+                        Line::from(""),
+                    ]));
+                }
+
+                let view_label = match app.radio_view {
+                    crate::player::app::RadioView::All => "ALL RADIOS".to_string(),
+                    crate::player::app::RadioView::Country => format!(
+                        "COUNTRY: {}",
+                        app.radio_countries
+                            .get(app.radio_country_idx)
+                            .cloned()
+                            .unwrap_or_default()
                     ),
-                    crate::player::app::ConfigField::AudioDevice => (
-                        "Audio Device",
-                        app.audio
-                            .device_name
-                            .lock()
-                            .unwrap()
-                            .clone()
-                            .unwrap_or("Default".to_string()),
-                    ),
-                    crate::player::app::ConfigField::AudioMode => {
-                        ("Audio Mode", app.audio.mode.lock().unwrap().clone())
-                    }
-                    crate::player::app::ConfigField::Visualizer => {
-                        ("Visualizer", format!("{:?}", config.audio.visualizer))
-                    }
-                    crate::player::app::ConfigField::SampleRate => {
-                        ("Sample Rate", format!("{} Hz", config.audio.sample_rate))
-                    }
-                    crate::player::app::ConfigField::BufferMs => {
-                        ("Buffer", format!("{} ms", config.audio.buffer_ms))
-                    }
-                    crate::player::app::ConfigField::ResampleQuality => (
-                        "Resample Qual",
-                        format!("{}", config.audio.resample_quality),
-                    ),
-                    crate::player::app::ConfigField::BitDepth => {
-                        ("Bit Depth", format!("{} bit", config.audio.bit_depth))
-                    }
-                    crate::player::app::ConfigField::ScanAtStartup => (
-                        "Scan at Startup",
-                        format!("{}", config.library.scan_at_startup),
-                    ),
-                    crate::player::app::ConfigField::ThemeBg => {
-                        ("Theme BG", config.theme.bg.clone())
-                    }
-                    crate::player::app::ConfigField::ThemeAccent => {
-                        ("Theme Accent", config.theme.accent.clone())
-                    }
                 };
 
-                items.push(ListItem::new(vec![
-                    Line::from(vec![Span::styled(
-                        format!("  {} ", label),
-                        Style::default().fg(app.theme.dim),
-                    )]),
-                    Line::from(vec![Span::styled(
-                        format!("    {} ", value),
-                        Style::default().fg(app.theme.accent_dim),
-                    )]),
-                    Line::from(""),
-                ]));
-            }
+                let title_style = if is_search {
+                    Style::default().bg(app.theme.accent).fg(app.theme.bg)
+                } else {
+                    Style::default().bg(Color::Blue).fg(app.theme.bg)
+                };
 
-            let sidebar = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg)),
-                )
-                .highlight_style(
-                    Style::default()
-                        .bg(app.theme.cursor_bg)
-                        .fg(app.theme.cursor_fg),
-                );
-            f.render_stateful_widget(sidebar, content_layout[0], &mut app.config_list_state);
-        } else if app.input_mode == InputMode::Radio {
-            let mut items = Vec::new();
-            for station in &app.filtered_stations {
-                items.push(ListItem::new(vec![
-                    Line::from(vec![Span::styled(
-                        format!("  {} ", station.name),
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    )]),
-                    Line::from(vec![Span::styled(
-                        format!("    {} ", station.country),
-                        Style::default().fg(app.theme.dim),
-                    )]),
-                    Line::from(""),
-                ]));
+                if items.is_empty() && is_search {
+                    let msg = format!("  No stations match '{}'", app.search_query);
+                    let sidebar = Paragraph::new(vec![
+                        Line::from(""),
+                        Line::from(Span::styled(
+                            "  NO RESULTS FOUND  ",
+                            Style::default()
+                                .fg(app.theme.critical)
+                                .add_modifier(Modifier::BOLD),
+                        )),
+                        Line::from(""),
+                        Line::from(Span::styled(msg, Style::default().fg(app.theme.dim))),
+                    ])
+                    .block(
+                        Block::default()
+                            .borders(Borders::RIGHT)
+                            .border_style(Style::default().fg(app.theme.status_bg))
+                            .title(Line::from(vec![
+                                Span::styled(" RADIO ", title_style),
+                                Span::raw(" "),
+                                Span::styled(view_label, Style::default().fg(app.theme.dim)),
+                            ])),
+                    );
+                    f.render_widget(sidebar, content_layout[0]);
+                } else {
+                    let sidebar = List::new(items)
+                        .block(
+                            Block::default()
+                                .borders(Borders::RIGHT)
+                                .border_style(Style::default().fg(app.theme.status_bg))
+                                .title(Line::from(vec![
+                                    Span::styled(" RADIO ", title_style),
+                                    Span::raw(" "),
+                                    Span::styled(view_label, Style::default().fg(app.theme.dim)),
+                                ])),
+                        )
+                        .highlight_style(
+                            Style::default()
+                                .bg(app.theme.cursor_bg)
+                                .fg(app.theme.cursor_fg),
+                        );
+                    f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
+                }
             }
-
-            let view_label = match app.radio_view {
-                crate::player::app::RadioView::All => "ALL RADIOS".to_string(),
-                crate::player::app::RadioView::Country => format!(
-                    "COUNTRY: {}",
-                    app.radio_countries
-                        .get(app.radio_country_idx)
-                        .cloned()
-                        .unwrap_or_default()
-                ),
+        } else if app.filtered_tracks.is_empty() {
+            let (title, msg) = if !app.search_query.is_empty() {
+                ("  NO RESULTS FOUND  ", format!("  No tracks match '{}'", app.search_query))
+            } else {
+                ("  LIBRARY IS EMPTY  ", "  Add music files and press 'r' to scan.".to_string())
             };
 
-            let sidebar = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg))
-                        .title(Line::from(vec![
-                            Span::styled(
-                                " RADIO ",
-                                Style::default().bg(app.theme.accent).fg(app.theme.bg),
-                            ),
-                            Span::raw(" "),
-                            Span::styled(view_label, Style::default().fg(app.theme.dim)),
-                        ])),
-                )
-                .highlight_style(
-                    Style::default()
-                        .bg(app.theme.cursor_bg)
-                        .fg(app.theme.cursor_fg),
-                );
-            f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
-        } else if app.input_mode == InputMode::CountrySelect {
-            let mut items = vec![ListItem::new(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled("All Radios", Style::default()),
-            ]))];
-
-            for country in &app.radio_countries {
-                items.push(ListItem::new(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled(country, Style::default()),
-                ])));
-            }
-
-            let sidebar = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg))
-                        .title(Line::from(vec![Span::styled(
-                            " SELECT COUNTRY ",
-                            Style::default().bg(Color::Magenta).fg(app.theme.bg),
-                        )])),
-                )
-                .highlight_style(
-                    Style::default()
-                        .bg(app.theme.cursor_bg)
-                        .fg(app.theme.cursor_fg),
-                );
-            f.render_stateful_widget(sidebar, content_layout[0], &mut app.country_list_state);
-        } else if app.filtered_tracks.is_empty() {
             let empty_msg = vec![
                 Line::from(""),
                 Line::from(Span::styled(
-                    "  LIBRARY IS EMPTY  ",
+                    title,
                     Style::default()
                         .fg(app.theme.critical)
                         .add_modifier(Modifier::BOLD),
                 )),
+                Line::from(""),
+                Line::from(Span::styled(msg, Style::default().fg(app.theme.dim))),
                 Line::from(""),
                 Line::from(vec![
                     Span::styled("  Music Directory: ", Style::default().fg(app.theme.dim)),
@@ -291,20 +259,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     Span::styled("r", Style::default().fg(app.theme.accent)),
                     Span::raw(" ] Scan for music"),
                 ]),
-                Line::from(vec![
-                    Span::raw("  [ "),
-                    Span::styled("/", Style::default().fg(app.theme.accent)),
-                    Span::raw(" ] Filter (once music is found)"),
-                ]),
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  Add music files (FLAC, MP3, etc.) to the",
-                    Style::default().fg(app.theme.dim),
-                )),
-                Line::from(Span::styled(
-                    "  folder above and press 'r' to refresh.",
-                    Style::default().fg(app.theme.dim),
-                )),
             ];
 
             let sidebar = Paragraph::new(empty_msg).block(
@@ -392,46 +346,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .split(dashboard_area);
 
             // --- IMAGE / RADIO / CONFIG ICON PREVIEW ---
-            if app.input_mode == InputMode::Config {
-                let config_chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Fill(1),
-                        Constraint::Length(5),
-                        Constraint::Fill(1),
-                    ])
-                    .split(dash_layout[0]);
-
-                let config_icon = vec![
-                    Line::from(vec![Span::styled(
-                        "   SETTINGS  ",
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    )]),
-                    Line::from(vec![Span::styled(
-                        "   ACTIVE    ",
-                        Style::default()
-                            .fg(app.theme.accent_dim)
-                            .add_modifier(Modifier::BOLD),
-                    )]),
-                    Line::from(""),
-                    Line::from(vec![Span::styled(
-                        " CONFIG MODE ",
-                        Style::default().fg(app.theme.dim),
-                    )]),
-                ];
-                f.render_widget(
-                    Paragraph::new(config_icon).alignment(Alignment::Center),
-                    config_chunks[1],
-                );
-                f.render_widget(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(app.theme.status_bg)),
-                    dash_layout[0],
-                );
-            } else if is_radio {
+            if is_radio {
                 let now = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
@@ -761,13 +676,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .bg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
-        InputMode::Config => (
-            " CONFIG ",
-            Style::default()
-                .fg(app.theme.bg)
-                .bg(app.theme.accent_dim)
-                .add_modifier(Modifier::BOLD),
-        ),
         InputMode::Radio => (
             " RADIO ",
             Style::default()
@@ -793,8 +701,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let mid_text = if app.input_mode == InputMode::Search {
         format!(" / {} ", app.search_query)
-    } else if app.input_mode == InputMode::Config {
-        " CONFIG - SETTINGS ".to_string()
     } else if app.input_mode == InputMode::Radio {
         " RADIO - STATIONS ".to_string()
     } else if app.input_mode == InputMode::CountrySelect {

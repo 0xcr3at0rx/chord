@@ -15,7 +15,6 @@ pub enum InputMode {
     Normal,
     Search,
     PlaylistSelect,
-    Config,
     Radio,
     CountrySelect,
 }
@@ -24,21 +23,6 @@ pub enum InputMode {
 pub enum RadioView {
     All,
     Country,
-}
-
-#[derive(PartialEq, Clone, Copy)]
-pub enum ConfigField {
-    MusicDir,
-    AudioDevice,
-    AudioMode,
-    Visualizer,
-    SampleRate,
-    BufferMs,
-    ResampleQuality,
-    BitDepth,
-    ScanAtStartup,
-    ThemeBg,
-    ThemeAccent,
 }
 
 #[derive(Clone, Debug)]
@@ -77,12 +61,14 @@ pub struct App {
     pub list_state: ListState,
     /// Selection state for the playlist selection sidebar.
     pub playlist_list_state: ListState,
-    /// Selection state for the configuration menu.
-    pub config_list_state: ListState,
     /// Selection state for the radio country list.
     pub country_list_state: ListState,
-    /// List of fields available in config mode.
-    pub config_fields: Vec<ConfigField>,
+    /// Current input mode (Normal, Search, Radio, etc.).
+    pub input_mode: InputMode,
+    /// Store the previous mode before entering a temporary mode.
+    pub previous_mode: InputMode,
+    /// Current search query string.
+    pub search_query: String,
     /// List of available radio stations.
     pub radio_stations: Vec<crate::core::models::RadioStation>,
     /// Filtered list of radio stations.
@@ -95,12 +81,6 @@ pub struct App {
     pub radio_countries: Vec<String>,
     /// Current selected country index.
     pub radio_country_idx: usize,
-    /// Current input mode (Normal, Search, PlaylistSelect, etc.).
-    pub input_mode: InputMode,
-    /// Store the previous mode before entering a temporary mode.
-    pub previous_mode: InputMode,
-    /// Current search query string.
-    pub search_query: String,
     /// Metadata of the track currently being played.
     pub current_track: Option<Arc<TrackMetadata>>,
     /// The track list context (playlist/filter) from which playback was started.
@@ -143,8 +123,6 @@ pub struct App {
     pub refresh_tx: mpsc::UnboundedSender<()>,
     /// Flag to indicate that the UI needs to be redrawn in the next frame.
     pub needs_redraw: bool,
-    /// Timestamp of the last configuration change to prevent accidental skips.
-    pub last_config_change: Instant,
 }
 
 impl App {
@@ -185,7 +163,6 @@ impl App {
             .into_iter()
             .map(|(id, name)| Playlist { id, name })
             .collect::<Vec<_>>();
-        // ------------------------------------------------------------------
 
         let mut list_state = ListState::default();
         if !tracks.is_empty() {
@@ -196,22 +173,6 @@ impl App {
         if !playlists.is_empty() {
             playlist_list_state.select(Some(0));
         }
-
-        let config_fields = vec![
-            ConfigField::MusicDir,
-            ConfigField::AudioDevice,
-            ConfigField::AudioMode,
-            ConfigField::Visualizer,
-            ConfigField::SampleRate,
-            ConfigField::BufferMs,
-            ConfigField::ResampleQuality,
-            ConfigField::BitDepth,
-            ConfigField::ScanAtStartup,
-            ConfigField::ThemeBg,
-            ConfigField::ThemeAccent,
-        ];
-        let mut config_list_state = ListState::default();
-        config_list_state.select(Some(0));
 
         let mut country_list_state = ListState::default();
         country_list_state.select(Some(0));
@@ -237,12 +198,16 @@ impl App {
             current_playlist_tracks: None,
             list_state,
             playlist_list_state,
-            config_list_state,
             country_list_state,
-            config_fields,
             input_mode: initial_mode,
             previous_mode: InputMode::Normal,
             search_query: String::new(),
+            radio_stations: Vec::new(),
+            filtered_stations: Vec::new(),
+            radio_list_state: ListState::default(),
+            radio_view: RadioView::All,
+            radio_countries: Vec::new(),
+            radio_country_idx: 0,
             current_track: None,
             playback_track_list: Vec::new(),
             playing_idx: None,
@@ -274,19 +239,12 @@ impl App {
             audio,
             settings: settings.clone(),
             theme,
-            radio_stations: Vec::new(),
-            filtered_stations: Vec::new(),
-            radio_list_state: ListState::default(),
-            radio_view: RadioView::All,
-            radio_countries: Vec::new(),
-            radio_country_idx: 0,
             index: index.clone(),
             metadata_rx,
             metadata_tx,
             refresh_rx,
             refresh_tx,
             needs_redraw: true,
-            last_config_change: Instant::now() - Duration::from_secs(5),
         })
     }
 
@@ -468,7 +426,7 @@ impl App {
     }
 
     pub fn previous_playlist(&mut self) {
-        let len = self.playlists.len() + 1; // +1 for "All ( Library )"
+        let len = self.playlists.len() + 1;
         let i = match self.playlist_list_state.selected() {
             Some(i) => (i + len - 1) % len,
             None => 0,
@@ -476,41 +434,137 @@ impl App {
         self.playlist_list_state.select(Some(i));
     }
 
-    pub fn filter_tracks(&mut self) {
-        let query = self.search_query.to_lowercase();
+    pub async fn save_config(&self) {
+        let (sr, bms, rq) = {
+            let mut config = self.settings.config.write().unwrap();
+            config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
+            config.audio.volume = self.volume;
+            config.audio.mode = self.audio.mode.lock().unwrap().clone();
 
-        let source = if let Some(playlist_tracks) = &self.current_playlist_tracks {
-            playlist_tracks
-        } else {
-            &self.all_tracks
+            // Only persist 'real' modes, not temporary selection menus
+            if self.input_mode == InputMode::Normal || self.input_mode == InputMode::Radio {
+                config.library.last_mode = self.input_mode;
+            }
+
+            (
+                config.audio.sample_rate,
+                config.audio.buffer_ms,
+                config.audio.resample_quality,
+            )
         };
 
-        if query.is_empty() {
-            self.filtered_tracks = source.clone();
-        } else {
-            self.filtered_tracks = source
-                .iter()
-                .filter(|t| t.search_key.contains(&query))
-                .cloned()
-                .collect();
+        self.audio.update_audio_config(sr, bms, rq);
+
+        let config_file = self.settings.config_dir.join("config.toml");
+        let _ = self.settings.save_config(&config_file);
+    }
+
+    pub async fn update(&mut self) {
+        // Drain refresh signals
+        while self.refresh_rx.try_recv().is_ok() {
+            self.refresh_library().await;
         }
 
-        // No need to sort here; source is already sorted and filter preserves order.
-        self.list_state.select(if self.filtered_tracks.is_empty() {
-            None
-        } else {
-            Some(0)
-        });
+        // Drain metadata updates
+        while let Ok(update) = self.metadata_rx.try_recv() {
+            if self.playing_idx == Some(update.idx) {
+                self.sample_rate = update.sample_rate;
+                self.channels = update.channels;
+                self.bitrate = update.bitrate;
+                self.bit_depth = update.bit_depth;
+                self.current_genre = update.genre;
+                self.current_label = update.label;
+                self.current_description = update.description;
+                self.current_cover_art = update.cover_art;
+                self.current_track_duration = update.duration;
+
+                // Update cached image and reset UI protocol
+                if let Some(art) = &self.current_cover_art {
+                    if let Ok(img) = image::load_from_memory(art) {
+                        self.cached_image = Some(img);
+                        self.image_state = None;
+                    }
+                }
+
+                self.needs_redraw = true;
+            }
+        }
+
+        let is_empty = self.audio.is_empty();
+        let has_error = self.audio.has_error();
+        let is_init = self.audio.is_initializing();
+
+        if !is_empty && self.is_starting {
+            self.is_starting = false;
+        }
+
+        if self.is_playing && !is_empty {
+            if let Some(start) = self.playback_start {
+                self.current_pos = self.accumulated_pos + start.elapsed();
+            }
+            if self.current_track_duration.as_secs_f64() > 0.0 {
+                self.progress =
+                    (self.current_pos.as_secs_f64() / self.current_track_duration.as_secs_f64()) as f32;
+                self.progress = self.progress.clamp(0.0, 1.0);
+            }
+            if !self.lyrics.is_empty() && self.lyrics.iter().any(|l| l.time > Duration::from_secs(0)) {
+                let mut idx = 0;
+                for (i, l) in self.lyrics.iter().enumerate() {
+                    if l.time <= self.current_pos {
+                        idx = i;
+                    } else {
+                        break;
+                    }
+                }
+                self.current_lyric_idx = idx;
+                if self.auto_scroll {
+                    self.lyrics_scroll = self.current_lyric_idx.saturating_sub(5) as u16;
+                }
+            }
+
+            if self.progress >= 0.999
+                && !self.playback_track_list.is_empty()
+                && !is_init
+            {
+                let next = self
+                    .playing_idx
+                    .map(|i| (i + 1) % self.playback_track_list.len())
+                    .unwrap_or(0);
+                self.play_track(next).await;
+            }
+        } else if self.is_playing
+            && is_empty
+            && !is_init
+            && !self.is_starting
+            && !self.playback_track_list.is_empty()
+        {
+            // Auto-advance on end of track OR if the file failed to play (broken track)
+            let next = self
+                .playing_idx
+                .map(|i| (i + 1) % self.playback_track_list.len())
+                .unwrap_or(0);
+
+            if has_error {
+                let detail = self.audio.last_error.lock().unwrap().clone();
+                let error_msg = format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default());
+
+                // Only update last_error if it's different to avoid redundant UI triggers
+                if self.last_error.as_ref() != Some(&error_msg) {
+                    self.last_error = Some(error_msg);
+                }
+            }
+
+            self.play_track(next).await;
+        }
+
+        // Always redraw to keep the visualizer animated
+        self.needs_redraw = true;
     }
 
     pub fn next(&mut self) {
-        let len = self.filtered_tracks.len();
-        if len == 0 {
-            return;
-        }
         let i = match self.list_state.selected() {
             Some(i) => {
-                if i >= len - 1 {
+                if i >= self.filtered_tracks.len() - 1 {
                     0
                 } else {
                     i + 1
@@ -522,14 +576,10 @@ impl App {
     }
 
     pub fn previous(&mut self) {
-        let len = self.filtered_tracks.len();
-        if len == 0 {
-            return;
-        }
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    len - 1
+                    self.filtered_tracks.len() - 1
                 } else {
                     i - 1
                 }
@@ -537,36 +587,6 @@ impl App {
             None => 0,
         };
         self.list_state.select(Some(i));
-    }
-
-    pub async fn toggle_playback(&mut self) {
-        if self.audio.is_empty() {
-            match self.input_mode {
-                InputMode::Radio | InputMode::CountrySelect => {
-                    if let Some(idx) = self.radio_list_state.selected() {
-                        self.play_radio(idx).await;
-                    }
-                }
-                _ => {
-                    if let Some(idx) = self.list_state.selected() {
-                        self.play_track(idx).await;
-                    }
-                }
-            }
-        } else {
-            if self.is_playing {
-                self.audio.pause();
-                self.is_playing = false;
-                if let Some(start) = self.playback_start {
-                    self.accumulated_pos += start.elapsed();
-                }
-                self.playback_start = None;
-            } else {
-                self.audio.resume();
-                self.is_playing = true;
-                self.playback_start = Some(Instant::now());
-            }
-        }
     }
 
     pub async fn play_track(&mut self, idx: usize) {
@@ -678,28 +698,82 @@ impl App {
         }
     }
 
+    pub async fn toggle_playback(&mut self) {
+        let is_empty = self.audio.is_empty();
+        
+        if is_empty {
+            // Nothing playing, start something
+            match self.input_mode {
+                InputMode::Radio => {
+                    if let Some(idx) = self.radio_list_state.selected() {
+                        self.play_radio(idx).await;
+                    }
+                }
+                _ => {
+                    if let Some(idx) = self.list_state.selected() {
+                        self.play_track(idx).await;
+                    }
+                }
+            }
+        } else {
+            // Audio is active, toggle pause
+            if self.is_playing {
+                self.audio.pause();
+                self.is_playing = false;
+                if let Some(start) = self.playback_start {
+                    self.accumulated_pos += start.elapsed();
+                }
+                self.playback_start = None;
+            } else {
+                self.audio.resume();
+                self.is_playing = true;
+                self.playback_start = Some(Instant::now());
+            }
+        }
+    }
+
+    pub fn filter_tracks(&mut self) {
+        let query = self.search_query.to_lowercase();
+        let source = if let Some(tracks) = &self.current_playlist_tracks {
+            tracks
+        } else {
+            &self.all_tracks
+        };
+
+        if query.is_empty() {
+            self.filtered_tracks = source.clone();
+        } else {
+            self.filtered_tracks = source
+                .iter()
+                .filter(|t| t.search_key.contains(&query))
+                .cloned()
+                .collect();
+        }
+
+        if self.filtered_tracks.is_empty() {
+            self.list_state.select(None);
+        } else {
+            self.list_state.select(Some(0));
+        }
+    }
+
     fn load_lyrics(&mut self, audio_path: &Path) {
         self.lyrics.clear();
         for ext in ["lrc", "txt"] {
-            if let Ok(content) = std::fs::read_to_string(audio_path.with_extension(ext)) {
-                if ext == "lrc" {
+            let lrc_path = audio_path.with_extension(ext);
+            if lrc_path.exists() {
+                if let Ok(content) = std::fs::read_to_string(lrc_path) {
                     self.parse_lrc(&content);
-                } else {
-                    self.lyrics = content
-                        .lines()
-                        .map(|l| crate::player::audio::LyricLine {
-                            time: Duration::from_secs(0),
-                            text: l.to_string(),
-                        })
-                        .collect();
+                    if !self.lyrics.is_empty() {
+                        break;
+                    }
                 }
-                break;
             }
         }
         if self.lyrics.is_empty() {
             self.lyrics.push(crate::player::audio::LyricLine {
                 time: Duration::from_secs(0),
-                text: "NO LYRICS".into(),
+                text: "NO LYRICS".to_string(),
             });
         }
     }
@@ -725,211 +799,5 @@ impl App {
             }
         }
         self.lyrics.sort_by_key(|l| l.time);
-    }
-
-    pub async fn handle_config_toggle(&mut self, field: ConfigField) {
-        self.last_config_change = Instant::now();
-        match field {
-            ConfigField::AudioMode => {
-                let current = self.audio.mode.lock().unwrap().clone();
-                let next = if current == "PIPEWIRE" {
-                    "ALSA"
-                } else {
-                    "PIPEWIRE"
-                };
-                self.audio.set_mode(next);
-                self.save_config().await;
-            }
-            ConfigField::Visualizer => {
-                {
-                    let mut config = self.settings.config.write().unwrap();
-                    config.audio.visualizer = config.audio.visualizer.next();
-                }
-                self.save_config().await;
-            }
-            ConfigField::SampleRate => {
-                {
-                    let mut config = self.settings.config.write().unwrap();
-                    config.audio.sample_rate = match config.audio.sample_rate {
-                        44100 => 48000,
-                        48000 => 88200,
-                        88200 => 96000,
-                        96000 => 176400,
-                        176400 => 192000,
-                        _ => 44100,
-                    };
-                }
-                self.save_config().await;
-            }
-            ConfigField::BufferMs => {
-                {
-                    let mut config = self.settings.config.write().unwrap();
-                    config.audio.buffer_ms = match config.audio.buffer_ms {
-                        10 => 20,
-                        20 => 50,
-                        50 => 100,
-                        100 => 200,
-                        200 => 500,
-                        _ => 10,
-                    };
-                }
-                self.save_config().await;
-            }
-            ConfigField::ResampleQuality => {
-                {
-                    let mut config = self.settings.config.write().unwrap();
-                    config.audio.resample_quality = (config.audio.resample_quality % 4) + 1;
-                }
-                self.save_config().await;
-            }
-            ConfigField::BitDepth => {
-                {
-                    let mut config = self.settings.config.write().unwrap();
-                    config.audio.bit_depth = if config.audio.bit_depth == 16 { 32 } else { 16 };
-                }
-                self.save_config().await;
-            }
-            ConfigField::ScanAtStartup => {
-                {
-                    let mut config = self.settings.config.write().unwrap();
-                    config.library.scan_at_startup = !config.library.scan_at_startup;
-                }
-                self.save_config().await;
-            }
-            _ => {}
-        }
-        self.needs_redraw = true;
-    }
-    pub async fn save_config(&self) {
-        let (sr, bms, rq) = {
-            let mut config = self.settings.config.write().unwrap();
-            config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
-            config.audio.volume = self.volume;
-            config.audio.mode = self.audio.mode.lock().unwrap().clone();
-
-            // Only persist 'real' modes, not temporary selection menus
-            if self.input_mode == InputMode::Normal || self.input_mode == InputMode::Radio {
-                config.library.last_mode = self.input_mode;
-            }
-
-            (
-                config.audio.sample_rate,
-                config.audio.buffer_ms,
-                config.audio.resample_quality,
-            )
-        };
-
-        self.audio.update_audio_config(sr, bms, rq);
-
-        let config_file = self.settings.config_dir.join("config.toml");
-        let _ = self.settings.save_config(&config_file);
-    }
-
-    pub async fn update(&mut self) {
-        // Drain refresh signals
-        while self.refresh_rx.try_recv().is_ok() {
-            self.refresh_library().await;
-        }
-
-        // Drain metadata updates
-        while let Ok(update) = self.metadata_rx.try_recv() {
-            if self.playing_idx == Some(update.idx) {
-                self.sample_rate = update.sample_rate;
-                self.channels = update.channels;
-                self.bitrate = update.bitrate;
-                self.bit_depth = update.bit_depth;
-                self.current_genre = update.genre;
-                self.current_label = update.label;
-                self.current_description = update.description;
-                self.current_cover_art = update.cover_art;
-                self.current_track_duration = update.duration;
-
-                // Update cached image and reset UI protocol
-                if let Some(art) = &self.current_cover_art {
-                    if let Ok(img) = image::load_from_memory(art) {
-                        self.cached_image = Some(img);
-                        self.image_state = None;
-                    }
-                }
-
-                self.needs_redraw = true;
-            }
-        }
-
-        let is_empty = self.audio.is_empty();
-        let has_error = self.audio.has_error();
-        let is_init = self.audio.is_initializing();
-
-        if !is_empty && self.is_starting {
-            self.is_starting = false;
-        }
-
-        if self.is_playing && !is_empty {
-            if let Some(start) = self.playback_start {
-                self.current_pos = self.accumulated_pos + start.elapsed();
-            }
-            if self.current_track_duration.as_secs_f64() > 0.0 {
-                self.progress = (self.current_pos.as_secs_f64()
-                    / self.current_track_duration.as_secs_f64())
-                    as f32;
-                self.progress = self.progress.clamp(0.0, 1.0);
-            }
-            if !self.lyrics.is_empty()
-                && self.lyrics.iter().any(|l| l.time > Duration::from_secs(0))
-            {
-                let mut idx = 0;
-                for (i, l) in self.lyrics.iter().enumerate() {
-                    if l.time <= self.current_pos {
-                        idx = i;
-                    } else {
-                        break;
-                    }
-                }
-                self.current_lyric_idx = idx;
-                if self.auto_scroll {
-                    self.lyrics_scroll = self.current_lyric_idx.saturating_sub(5) as u16;
-                }
-            }
-
-            if self.progress >= 0.999
-                && !self.playback_track_list.is_empty()
-                && !is_init
-                && self.last_config_change.elapsed().as_millis() > 1000
-            {
-                let next = self
-                    .playing_idx
-                    .map(|i| (i + 1) % self.playback_track_list.len())
-                    .unwrap_or(0);
-                self.play_track(next).await;
-            }
-        } else if self.is_playing
-            && is_empty
-            && !is_init
-            && !self.is_starting
-            && !self.playback_track_list.is_empty()
-            && self.last_config_change.elapsed().as_millis() > 1000
-        {
-            // Auto-advance on end of track OR if the file failed to play (broken track)
-            // debounced by last_config_change to prevent skips during re-init
-            let next = self
-                .playing_idx
-                .map(|i| (i + 1) % self.playback_track_list.len())
-                .unwrap_or(0);
-
-            if has_error {
-                let detail = self.audio.last_error.lock().unwrap().clone();
-                let error_msg = format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default());
-
-                // Only update last_error if it's different to avoid redundant UI triggers
-                if self.last_error.as_ref() != Some(&error_msg) {
-                    self.last_error = Some(error_msg);
-                }
-            }
-
-            self.play_track(next).await;
-        }
-
-        // Always redraw to keep the visualizer animated
-        self.needs_redraw = true;
     }
 }

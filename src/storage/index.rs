@@ -44,10 +44,22 @@ impl LibraryIndex {
         let music_dir = music_dir.to_path_buf();
 
         let (tracks_map, playlists) = tokio::task::spawn_blocking(move || {
-            let cache: LibraryCache = std::fs::read_to_string(&cache_path)
+            let mut cache: LibraryCache = std::fs::read_to_string(&cache_path)
                 .ok()
                 .and_then(|s| toml::from_str(&s).ok())
                 .unwrap_or_default();
+
+            for track in cache.tracks.values_mut() {
+                if track.search_key.is_empty() {
+                    track.search_key = format!(
+                        "{} {} {}",
+                        track.title,
+                        track.artist,
+                        track.album.as_deref().unwrap_or("")
+                    )
+                    .to_lowercase();
+                }
+            }
 
             let mut music_folders = std::collections::HashSet::new();
             for path_str in cache.tracks.keys() {

@@ -8,10 +8,9 @@
 | `l` | Next track (Normal mode) |
 | `h` | Previous track (Normal mode) |
 | `Enter` | Play selected track / station |
-| `Tab` | **Toggle Option (Config mode)** / Context selection (Library/Radio) |
+| `Tab` | Context selection (Library/Radio) |
 | `p` / `Space` | Pause / Resume |
 | `/` | Search / Filter |
-| `Ctrl` + `c` | Open Configuration Menu |
 | `Ctrl` + `r` | Enter Radio Mode |
 | `Esc` | Return to Normal Mode |
 | `+` / `=` | Increase Volume (max 100%) |

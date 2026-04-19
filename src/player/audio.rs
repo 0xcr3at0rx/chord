@@ -28,10 +28,7 @@ impl<R: Read> StreamingReader<R> {
                 Err(_) => break,
             }
         }
-        log::info!(
-            "StreamingReader: buffered {} bytes of header",
-            header_buffer.len()
-        );
+
         Self {
             inner,
             pos: header_buffer.len() as u64,
@@ -125,7 +122,6 @@ impl<R: Read> Seek for StreamingReader<R> {
 
 fn suppress_alsa_errors() {
     // Disabled C-variadic FFI as it is unstable.
-    // For most users, env_logger or other filtering is enough.
 }
 
 #[derive(Clone, Debug)]
@@ -280,7 +276,6 @@ impl AudioPlayer {
                         };
 
                         if let Err(e) = &res {
-                            log::error!("Audio initialization failed: {}", e);
                             *backend.last_error_shared.lock().unwrap() = Some(e.clone());
                         } else {
                             *backend.last_error_shared.lock().unwrap() = None;
@@ -295,14 +290,11 @@ impl AudioPlayer {
                     Ok(AudioCmd::Play(path)) => {
                         let res = backend.play(path);
                         if let Err(e) = &res {
-                            log::error!("Playback failed: {}", e);
                             *backend.last_error_shared.lock().unwrap() = Some(e.clone());
                         } else {
                             *backend.last_error_shared.lock().unwrap() = None;
                         }
-                        backend
-                            .has_error_shared
-                            .store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
+                        backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(AudioCmd::PlayStream(url, request_id)) => {
                         backend.stop_sink();
@@ -319,9 +311,7 @@ impl AudioPlayer {
                             if let Some(handle) = handle_shared {
                                 let res = (|| -> Result<Sink, String> {
                                     let response = reqwest::blocking::Client::builder()
-                                        .user_agent(
-                                            "Chord/1.1 (https://github.com/0xcr3at0rx/chord)",
-                                        )
+                                        .user_agent("Chord/1.1 (https://github.com/0xcr3at0rx/chord)")
                                         .timeout(Duration::from_secs(20))
                                         .redirect(reqwest::redirect::Policy::limited(10))
                                         .build()
@@ -337,15 +327,10 @@ impl AudioPlayer {
                                     }
 
                                     let reader = StreamingReader::new(response);
-                                    let source = Decoder::new(reader)
-                                        .map_err(|e| format!("Decoder: {}", e))?;
+                                    let source = Decoder::new(reader).map_err(|e| format!("Decoder: {}", e))?;
                                     let source = rodio::Source::convert_samples::<f32>(source);
-                                    let source = AmplitudeTracker {
-                                        inner: source,
-                                        amplitude: amplitude_shared_thread,
-                                    };
-                                    let sink = Sink::try_new(&handle)
-                                        .map_err(|e| format!("Sink: {}", e))?;
+                                    let source = AmplitudeTracker { inner: source, amplitude: amplitude_shared_thread };
+                                    let sink = Sink::try_new(&handle).map_err(|e| format!("Sink: {}", e))?;
                                     sink.set_volume(volume);
                                     sink.append(source);
                                     sink.play();
@@ -354,14 +339,11 @@ impl AudioPlayer {
 
                                 match res {
                                     Ok(sink) => {
-                                        let _ = tx_clone
-                                            .send(AudioCmd::RegisterRadioSink(sink, request_id));
+                                        let _ = tx_clone.send(AudioCmd::RegisterRadioSink(sink, request_id));
                                     }
                                     Err(e) => {
-                                        log::error!("Stream error: {}", e);
                                         *last_error_shared.lock().unwrap() = Some(e);
-                                        has_error_shared
-                                            .store(true, std::sync::atomic::Ordering::Relaxed);
+                                        has_error_shared.store(true, std::sync::atomic::Ordering::Relaxed);
                                     }
                                 }
                             }

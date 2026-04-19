@@ -37,44 +37,6 @@ pub enum VisualizerMode {
     None,
 }
 
-impl VisualizerMode {
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Bars => Self::BarsDot,
-            Self::BarsDot => Self::Rain,
-            Self::Rain => Self::BarsOutline,
-            Self::BarsOutline => Self::Bricks,
-            Self::Bricks => Self::Columns,
-            Self::Columns => Self::ClassicPeak,
-            Self::ClassicPeak => Self::Wave,
-            Self::Wave => Self::Scatter,
-            Self::Scatter => Self::Flame,
-            Self::Flame => Self::Retro,
-            Self::Retro => Self::Pulse,
-            Self::Pulse => Self::Matrix,
-            Self::Matrix => Self::Binary,
-            Self::Binary => Self::Sakura,
-            Self::Sakura => Self::Firework,
-            Self::Firework => Self::Bubbles,
-            Self::Bubbles => Self::Logo,
-            Self::Logo => Self::Terrain,
-            Self::Terrain => Self::Glitch,
-            Self::Glitch => Self::Scope,
-            Self::Scope => Self::Heartbeat,
-            Self::Heartbeat => Self::Butterfly,
-            Self::Butterfly => Self::Lightning,
-            Self::Lightning => Self::Blocks,
-            Self::Blocks => Self::Dots,
-            Self::Dots => Self::Noise,
-            Self::Noise => Self::Interference,
-            Self::Interference => Self::Orbit,
-            Self::Orbit => Self::Particles,
-            Self::Particles => Self::None,
-            Self::None => Self::Bars,
-        }
-    }
-}
-
 pub fn render_visualizer(
     is_playing: bool,
     width: u16,

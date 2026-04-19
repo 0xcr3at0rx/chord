@@ -5,6 +5,7 @@ use crate::player::audio::AudioPlayer;
 use anyhow::Result;
 use ratatui::widgets::ListState;
 use regex::Regex;
+use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -16,6 +17,13 @@ pub enum InputMode {
     Search,
     PlaylistSelect,
     Config,
+    Radio,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum RadioView {
+    All,
+    Country,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -68,6 +76,18 @@ pub struct App<'a> {
     pub config_list_state: ListState,
     /// List of fields available in config mode.
     pub config_fields: Vec<ConfigField>,
+    /// List of available radio stations.
+    pub radio_stations: Vec<crate::core::models::RadioStation>,
+    /// Filtered list of radio stations.
+    pub filtered_stations: Vec<crate::core::models::RadioStation>,
+    /// Selection state for the radio station list.
+    pub radio_list_state: ListState,
+    /// Current view mode for radio (All or Country-wise).
+    pub radio_view: RadioView,
+    /// List of countries for country-wise view.
+    pub radio_countries: Vec<String>,
+    /// Current selected country index.
+    pub radio_country_idx: usize,
     /// Current input mode (Normal, Search, PlaylistSelect, etc.).
     pub input_mode: InputMode,
     /// Current search query string.
@@ -221,6 +241,12 @@ impl<'a> App<'a> {
             audio,
             settings: settings.clone(),
             theme,
+            radio_stations: Vec::new(),
+            filtered_stations: Vec::new(),
+            radio_list_state: ListState::default(),
+            radio_view: RadioView::All,
+            radio_countries: Vec::new(),
+            radio_country_idx: 0,
             index: index.clone(),
             metadata_rx,
             metadata_tx,
@@ -264,6 +290,117 @@ impl<'a> App<'a> {
         }
         self.filter_tracks();
         self.needs_redraw = true;
+    }
+
+    pub fn load_radio_stations(&mut self) {
+        let radio_file = self.settings.config_dir.join("radio.toml");
+        let mut stations = Vec::new();
+
+        if radio_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(radio_file) {
+                #[derive(Deserialize)]
+                struct RadioConfig {
+                    stations: Vec<crate::core::models::RadioStation>,
+                }
+                if let Ok(config) = toml::from_str::<RadioConfig>(&content) {
+                    stations = config.stations;
+                }
+            }
+        }
+
+        // Add some default public radios if none or as extra
+        if stations.is_empty() {
+            stations.push(crate::core::models::RadioStation {
+                name: "BBC Radio 1".into(),
+                url: "http://stream.live.vc.bbc.co.uk/bbc_radio_one_offline".into(),
+                country: "UK".into(),
+                tags: Some("Pop, Top 40".into()),
+            });
+            stations.push(crate::core::models::RadioStation {
+                name: "SomaFM Groove Salad".into(),
+                url: "http://ice1.somafm.com/groovesalad-128-mp3".into(),
+                country: "USA".into(),
+                tags: Some("Ambient, Chillout".into()),
+            });
+            stations.push(crate::core::models::RadioStation {
+                name: "FIP".into(),
+                url: "http://icecast.radiofrance.fr/fip-midfi.mp3".into(),
+                country: "France".into(),
+                tags: Some("Eclectic".into()),
+            });
+        }
+
+        self.radio_stations = stations.clone();
+        
+        let countries: std::collections::HashSet<String> = stations.iter().map(|s| s.country.clone()).collect();
+        let mut countries_vec: Vec<String> = countries.into_iter().collect();
+        countries_vec.sort();
+        self.radio_countries = countries_vec;
+        
+        self.filter_radio();
+    }
+
+    pub fn filter_radio(&mut self) {
+        let query = self.search_query.to_lowercase();
+        let mut filtered = match self.radio_view {
+            RadioView::All => self.radio_stations.clone(),
+            RadioView::Country => {
+                if let Some(country) = self.radio_countries.get(self.radio_country_idx) {
+                    self.radio_stations.iter().filter(|s| &s.country == country).cloned().collect()
+                } else {
+                    self.radio_stations.clone()
+                }
+            }
+        };
+
+        if !query.is_empty() {
+            filtered = filtered.into_iter().filter(|s| s.name.to_lowercase().contains(&query) || s.country.to_lowercase().contains(&query)).collect();
+        }
+
+        self.filtered_stations = filtered;
+        if self.filtered_stations.is_empty() {
+            self.radio_list_state.select(None);
+        } else {
+            self.radio_list_state.select(Some(0));
+        }
+    }
+
+    pub async fn play_radio(&mut self, idx: usize) {
+        if let Some(station) = self.filtered_stations.get(idx) {
+            self.audio.play_stream(station.url.clone());
+            self.is_playing = true;
+            // For radio, we don't have local track info, duration etc.
+            self.current_track = None; 
+            self.accumulated_pos = Duration::from_secs(0);
+            self.current_pos = Duration::from_secs(0);
+            self.playback_start = Some(Instant::now());
+            self.lyrics.clear();
+            self.last_error = None;
+            
+            // Dummy current track for UI display
+            self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
+                track_id: "radio".into(),
+                isrc: None,
+                title: station.name.clone(),
+                artist: format!("RADIO: {}", station.country),
+                album: station.tags.clone(),
+                album_art_url: None,
+                release_date: None,
+                duration_ms: None,
+                track_number: None,
+                genres: station.tags.clone(),
+                file_size: None,
+                file_mtime: None,
+                file_path: None,
+                last_verified_at: None,
+                genre: None,
+                label: None,
+                bit_depth: None,
+                sampling_rate: None,
+                downloaded_at: None,
+                status: Some("radio".into()),
+            }));
+        }
     }
 
     pub fn next_playlist(&mut self) {

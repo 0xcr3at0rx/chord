@@ -1,6 +1,6 @@
 use crate::core::config::Settings;
 use crate::storage::index::LibraryIndex;
-use crate::player::app::{App, InputMode};
+use crate::player::app::{App, InputMode, RadioView};
 use crate::player::ui::ui;
 use anyhow::Result;
 use crossterm::{
@@ -87,6 +87,9 @@ async fn run_app<B: Backend>(
                     // Global keys (Playback, Volume, etc.)
                     if key.code == KEY_CONFIG_MODE && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
                         app.input_mode = InputMode::Config;
+                    } else if key.code == KEY_RADIO_MODE && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        app.input_mode = InputMode::Radio;
+                        app.load_radio_stations();
                     } else if key.code == KEY_QUIT {
                         return Ok(());
                     } else if key.code == KEY_TOGGLE_PLAYBACK_1 || key.code == KEY_TOGGLE_PLAYBACK_2 {
@@ -170,6 +173,49 @@ async fn run_app<B: Backend>(
                                     let field = app.config_fields[i];
                                     app.handle_config_toggle(field).await;
                                 }
+                            }
+                        }
+                        InputMode::Radio => {
+                            if key.code == KEY_BACK {
+                                app.input_mode = InputMode::Normal;
+                            } else if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
+                                let len = app.filtered_stations.len();
+                                if len > 0 {
+                                    let i = match app.radio_list_state.selected() {
+                                        Some(i) => (i + 1) % len,
+                                        None => 0,
+                                    };
+                                    app.radio_list_state.select(Some(i));
+                                }
+                            } else if key.code == KEY_LIST_UP_VIM || key.code == KEY_LIST_UP {
+                                let len = app.filtered_stations.len();
+                                if len > 0 {
+                                    let i = match app.radio_list_state.selected() {
+                                        Some(i) => (i + len - 1) % len,
+                                        None => 0,
+                                    };
+                                    app.radio_list_state.select(Some(i));
+                                }
+                            } else if key.code == KEY_PLAYLIST_MODE {
+                                // Toggle view: All -> Country (Next Country) -> ... -> All
+                                if app.radio_view == RadioView::All {
+                                    app.radio_view = RadioView::Country;
+                                    app.radio_country_idx = 0;
+                                } else {
+                                    app.radio_country_idx += 1;
+                                    if app.radio_country_idx >= app.radio_countries.len() {
+                                        app.radio_view = RadioView::All;
+                                    }
+                                }
+                                app.filter_radio();
+                            } else if key.code == KEY_CONFIRM {
+                                if let Some(i) = app.radio_list_state.selected() {
+                                    app.play_radio(i).await;
+                                }
+                            } else if key.code == KEY_SEARCH_MODE {
+                                app.input_mode = InputMode::Search;
+                                app.search_query.clear();
+                                app.filter_radio();
                             }
                         }
                         InputMode::Normal => {

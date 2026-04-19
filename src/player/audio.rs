@@ -47,6 +47,7 @@ pub struct LyricLine {
 enum AudioCmd {
     Init(Option<String>),
     Play(PathBuf),
+    PlayStream(String),
     SetVolume(f32),
     Pause,
     Resume,
@@ -139,6 +140,16 @@ impl AudioPlayer {
                         }
                         backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                     }
+                    Ok(AudioCmd::PlayStream(url)) => {
+                        let res = backend.play_stream(url);
+                        if let Err(e) = &res {
+                            log::error!("Stream playback failed: {}", e);
+                            *backend.last_error_shared.lock().unwrap() = Some(e.clone());
+                        } else {
+                            *backend.last_error_shared.lock().unwrap() = None;
+                        }
+                        backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
+                    }
                     Ok(AudioCmd::SetVolume(v)) => {
                         backend.volume = v;
                         if let Some(s) = &backend.sink {
@@ -195,6 +206,12 @@ impl AudioPlayer {
         self.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
         self.has_error.store(false, std::sync::atomic::Ordering::Relaxed);
         let _ = self.cmd_tx.send(AudioCmd::Play(path));
+    }
+
+    pub fn play_stream(&self, url: String) {
+        self.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.has_error.store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.cmd_tx.send(AudioCmd::PlayStream(url));
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -348,6 +365,41 @@ impl AudioBackend {
         }
         
         Err("Playback failed".into())
+    }
+
+    fn play_stream(&mut self, url: String) -> Result<(), String> {
+        self.stop_sink();
+        
+        for attempt in 0..3 {
+            if let Err(e) = self.try_init(false) {
+                if attempt == 2 { return Err(e); }
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+
+            if let Some(handle) = &self.handle {
+                let mut response = reqwest::blocking::get(&url).map_err(|e| e.to_string())?;
+                let mut buffer = Vec::new();
+                std::io::copy(&mut response, &mut buffer).map_err(|e| e.to_string())?;
+                let source = Decoder::new(std::io::Cursor::new(buffer)).map_err(|e| e.to_string())?;
+                
+                match Sink::try_new(handle) {
+                    Ok(sink) => {
+                        sink.set_volume(self.volume);
+                        sink.append(source);
+                        sink.play();
+                        self.sink = Some(sink);
+                        return Ok(());
+                    }
+                    Err(_) => {
+                        self.stop_all();
+                        std::thread::sleep(Duration::from_millis(100));
+                    }
+                }
+            }
+        }
+        
+        Err("Stream playback failed".into())
     }
 }
 

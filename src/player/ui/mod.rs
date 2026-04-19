@@ -132,6 +132,38 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 )
                 .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.config_list_state);
+        } else if app.input_mode == InputMode::Radio {
+            let mut items = Vec::new();
+            for station in &app.filtered_stations {
+                items.push(ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(format!("  {} ", station.name), Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("    {} ", station.country), Style::default().fg(app.theme.dim)),
+                    ]),
+                    Line::from(""),
+                ]));
+            }
+
+            let view_label = match app.radio_view {
+                crate::player::app::RadioView::All => "ALL RADIOS".to_string(),
+                crate::player::app::RadioView::Country => format!("COUNTRY: {}", app.radio_countries.get(app.radio_country_idx).cloned().unwrap_or_default()),
+            };
+
+            let sidebar = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(app.theme.status_bg))
+                        .title(Line::from(vec![
+                            Span::styled(" RADIO ", Style::default().bg(app.theme.accent).fg(app.theme.bg)),
+                            Span::raw(" "),
+                            Span::styled(view_label, Style::default().fg(app.theme.dim)),
+                        ])),
+                )
+                .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
+            f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
         } else if app.filtered_tracks.is_empty() {
             let empty_msg = vec![
                 Line::from(""),
@@ -476,6 +508,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .bg(app.theme.accent_dim)
                 .add_modifier(Modifier::BOLD),
         ),
+        InputMode::Radio => (
+            " RADIO ",
+            Style::default()
+                .fg(app.theme.bg)
+                .bg(Color::Blue)
+                .add_modifier(Modifier::BOLD),
+        ),
     };
 
     f.render_widget(
@@ -489,6 +528,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         format!(" / {} ", app.search_query)
     } else if app.input_mode == InputMode::Config {
         " CONFIG - SETTINGS ".to_string()
+    } else if app.input_mode == InputMode::Radio {
+        " RADIO - STATIONS ".to_string()
     } else if let Some(track) = &app.current_track {
         format!(" Playing: {} - {} ", track.artist, track.title)
     } else {

@@ -24,3 +24,11 @@ pub struct TrackMetadata {
     pub downloaded_at: Option<DateTime<Utc>>,
     pub status: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RadioStation {
+    pub name: String,
+    pub url: String,
+    pub country: String,
+    pub tags: Option<String>,
+}

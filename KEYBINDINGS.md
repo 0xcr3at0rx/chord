@@ -13,6 +13,7 @@
 | `Tab` | Toggle Playlist Selection |
 | `r` | Refresh Library / Rescan |
 | `Ctrl` + `c` | Open Configuration Menu |
+| `Ctrl` + `r` | Enter Radio Mode |
 | `+` / `=` | Increase Volume (max 100%) |
 | `-` | Decrease Volume |
 | `d` | Cycle Audio Output Device |

@@ -53,6 +53,7 @@ pub const KEY_SEARCH_MODE: KeyCode = KeyCode::Char('/');
 pub const KEY_PLAYLIST_MODE: KeyCode = KeyCode::Tab;
 pub const KEY_REFRESH: KeyCode = KeyCode::Char('r');
 pub const KEY_CONFIG_MODE: KeyCode = KeyCode::Char('c'); // Used with Ctrl
+pub const KEY_RADIO_MODE: KeyCode = KeyCode::Char('r'); // Used with Ctrl
 
 // List Navigation
 pub const KEY_LIST_UP: KeyCode = KeyCode::Up;

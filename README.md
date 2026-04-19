@@ -12,6 +12,7 @@
 - **Album Art**: High-fidelity image preview in the TUI (requires a terminal with image support like Kitty, iTerm2, or WezTerm).
 - **Metadata**: Shows technical specs (bitrate, sample rate, etc.) and lyrics from files.
 - **Visualizer**: Real-time high-density visualizer that reacts to playback.
+- **Radio Mode**: Stream online radio stations (Ctrl+R). Cycle by country or search all stations.
 
 <br clear="right"/>
 

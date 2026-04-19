@@ -80,11 +80,11 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                     // --- GLOBAL CTRL KEYS ---
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         if key.code == KEY_RADIO_MODE {
-                            if app.input_mode == InputMode::Radio {
-                                app.input_mode = InputMode::Normal;
+                            if app.input_mode == InputMode::Online {
+                                app.input_mode = InputMode::Offline;
                             } else {
                                 app.previous_mode = app.input_mode;
-                                app.input_mode = InputMode::Radio;
+                                app.input_mode = InputMode::Online;
                                 app.load_radio_stations();
                             }
                             continue;
@@ -96,16 +96,17 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                         app.input_mode = if app.input_mode == InputMode::Search {
                             app.previous_mode
                         } else {
-                            InputMode::Normal
+                            InputMode::Offline
                         };
                         continue;
                     }
 
                     // --- MODE SPECIFIC LOGIC ---
                     match app.input_mode {
-                        InputMode::Normal => {
+                        InputMode::Offline => {
                             match key.code {
                                 KEY_QUIT => return Ok(()),
+                                KEY_VISUALIZER => app.cycle_visualizer().await,
                                 KEY_TOGGLE_PLAYBACK_1 | KEY_TOGGLE_PLAYBACK_2 => app.toggle_playback().await,
                                 KEY_VOL_UP_1 | KEY_VOL_UP_2 => {
                                     app.volume = (app.volume + 0.05).min(1.0);
@@ -155,16 +156,17 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                 app.input_mode = app.previous_mode;
                             } else if let KeyCode::Char(c) = key.code {
                                 app.search_query.push(c);
-                                if app.previous_mode == InputMode::Radio { app.filter_radio(); } else { app.filter_tracks(); }
+                                if app.previous_mode == InputMode::Online { app.filter_radio(); } else { app.filter_tracks(); }
                             } else if key.code == KeyCode::Backspace {
                                 app.search_query.pop();
-                                if app.previous_mode == InputMode::Radio { app.filter_radio(); } else { app.filter_tracks(); }
+                                if app.previous_mode == InputMode::Online { app.filter_radio(); } else { app.filter_tracks(); }
                             }
                         }
 
-                        InputMode::Radio => {
+                        InputMode::Online => {
                             match key.code {
                                 KEY_QUIT => return Ok(()),
+                                KEY_VISUALIZER => app.cycle_visualizer().await,
                                 KEY_TOGGLE_PLAYBACK_1 | KEY_TOGGLE_PLAYBACK_2 => app.toggle_playback().await,
                                 KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => {
                                     let len = app.filtered_stations.len();
@@ -207,9 +209,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                         let p_clone = p.clone();
                                         app.select_playlist(Some(p_clone)).await;
                                     }
-                                    app.input_mode = InputMode::Normal;
+                                    app.input_mode = InputMode::Offline;
                                 }
-                                KEY_PLAYLIST_MODE => app.input_mode = InputMode::Normal,
+                                KEY_PLAYLIST_MODE => app.input_mode = InputMode::Offline,
                                 _ => {}
                             }
                         }
@@ -236,9 +238,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                         app.radio_country_idx = idx - 1;
                                     }
                                     app.filter_radio();
-                                    app.input_mode = InputMode::Radio;
+                                    app.input_mode = InputMode::Online;
                                 }
-                                KEY_PLAYLIST_MODE => app.input_mode = InputMode::Radio,
+                                KEY_PLAYLIST_MODE => app.input_mode = InputMode::Online,
                                 _ => {}
                             }
                         }

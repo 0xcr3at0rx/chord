@@ -1,16 +1,16 @@
-# Radio Mode
+# Online Mode
 
 **Chord** now supports streaming online radio stations directly from the TUI with an improved, text-based interface.
 
-## Entering Radio Mode
+## Entering Online Mode
 
-Press `Ctrl + r` to enter or toggle Radio Mode.
+Press `Ctrl + r` to enter or toggle Online Mode.
 
 ## Features
 
 - **Public Stations**: Includes over 40 high-quality default public radio stations from curated global directories.
 - **Custom Stations**: Add your own favorite streams in `~/.config/chord/radio.toml`.
-- **Filtering**: Press `/` in Radio Mode to search for specific stations by name or country.
+- **Filtering**: Press `/` in Online Mode to search for specific stations by name or country.
 - **Country Selection**: Press `Tab` to open the Country list and filter stations by region.
 - **Dynamic Art**: Procedural animated art that reflects the station's energy and amplitude in real-time.
 
@@ -32,15 +32,16 @@ country = "Germany"
 tags = "Electronic, Techno"
 ```
 
-## Radio Controls
+## Online Controls
 
 | Key | Action |
 | :--- | :--- |
-| `Ctrl` + `r` | Enter Radio Mode / Toggle |
+| `Ctrl` + `r` | Enter Online Mode / Toggle |
 | `Tab` | Open Country Selection list |
 | `j` / `k` | Navigate station list |
 | `Enter` | Start streaming selected station |
-| `Esc` | Return to Normal Mode |
+| `Esc` | Return to Offline Mode |
 | `/` | Search / Filter stations |
 | `p` / `Space` | Pause / Resume current stream |
+| `v` | Cycle Visualizer Mode |
 | `+` / `-` | Control volume |

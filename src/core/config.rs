@@ -106,7 +106,7 @@ impl Default for LibraryConfig {
         Self {
             music_dir,
             scan_at_startup: true,
-            last_mode: crate::player::app::InputMode::Normal,
+            last_mode: crate::player::app::InputMode::Offline,
         }
     }
 }

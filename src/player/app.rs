@@ -12,10 +12,10 @@ use tokio::sync::mpsc;
 
 #[derive(PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InputMode {
-    Normal,
+    Offline,
     Search,
     PlaylistSelect,
-    Radio,
+    Online,
     CountrySelect,
 }
 
@@ -200,7 +200,7 @@ impl App {
             playlist_list_state,
             country_list_state,
             input_mode: initial_mode,
-            previous_mode: InputMode::Normal,
+            previous_mode: InputMode::Offline,
             search_query: String::new(),
             radio_stations: Vec::new(),
             filtered_stations: Vec::new(),
@@ -442,7 +442,7 @@ impl App {
             config.audio.mode = self.audio.mode.lock().unwrap().clone();
 
             // Only persist 'real' modes, not temporary selection menus
-            if self.input_mode == InputMode::Normal || self.input_mode == InputMode::Radio {
+            if self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online {
                 config.library.last_mode = self.input_mode;
             }
 
@@ -704,7 +704,7 @@ impl App {
         if is_empty {
             // Nothing playing, start something
             match self.input_mode {
-                InputMode::Radio => {
+                InputMode::Online => {
                     if let Some(idx) = self.radio_list_state.selected() {
                         self.play_radio(idx).await;
                     }
@@ -730,6 +730,15 @@ impl App {
                 self.playback_start = Some(Instant::now());
             }
         }
+    }
+
+    pub async fn cycle_visualizer(&mut self) {
+        {
+            let mut config = self.settings.config.write().unwrap();
+            config.audio.visualizer = config.audio.visualizer.next();
+        }
+        self.save_config().await;
+        self.needs_redraw = true;
     }
 
     pub fn filter_tracks(&mut self) {

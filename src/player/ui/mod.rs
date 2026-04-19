@@ -110,7 +110,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .fg(app.theme.cursor_fg),
                 );
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.playlist_list_state);
-        } else if effective_mode == InputMode::Radio || effective_mode == InputMode::CountrySelect {
+        } else if effective_mode == InputMode::Online || effective_mode == InputMode::CountrySelect {
             if effective_mode == InputMode::CountrySelect {
                 let mut items = vec![ListItem::new(Line::from(vec![
                     Span::styled("  ", Style::default()),
@@ -193,7 +193,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                             .borders(Borders::RIGHT)
                             .border_style(Style::default().fg(app.theme.status_bg))
                             .title(Line::from(vec![
-                                Span::styled(" RADIO ", title_style),
+                                Span::styled(" ONLINE ", title_style),
                                 Span::raw(" "),
                                 Span::styled(view_label, Style::default().fg(app.theme.dim)),
                             ])),
@@ -206,7 +206,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                                 .borders(Borders::RIGHT)
                                 .border_style(Style::default().fg(app.theme.status_bg))
                                 .title(Line::from(vec![
-                                    Span::styled(" RADIO ", title_style),
+                                    Span::styled(" ONLINE ", title_style),
                                     Span::raw(" "),
                                     Span::styled(view_label, Style::default().fg(app.theme.dim)),
                                 ])),
@@ -219,7 +219,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
                 }
             }
-        } else if app.filtered_tracks.is_empty() {
+        }
+ else if app.filtered_tracks.is_empty() {
             let (title, msg) = if !app.search_query.is_empty() {
                 ("  NO RESULTS FOUND  ", format!("  No tracks match '{}'", app.search_query))
             } else {
@@ -555,6 +556,16 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         Style::default().fg(app.theme.dim),
                     ));
                 }
+
+                let visualizer_mode_label = app.settings.config.read().unwrap().audio.visualizer;
+                tech_spans.push(Span::styled(
+                    " * ",
+                    Style::default().fg(app.theme.status_bg),
+                ));
+                tech_spans.push(Span::styled(
+                    format!("{:?}", visualizer_mode_label).to_uppercase(),
+                    Style::default().fg(app.theme.accent_dim),
+                ));
             }
 
             f.render_widget(
@@ -655,8 +666,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .split(main_layout[2]);
 
     let (mode_str, mode_style) = match app.input_mode {
-        InputMode::Normal => (
-            " NORMAL ",
+        InputMode::Offline => (
+            " OFFLINE ",
             Style::default()
                 .fg(app.theme.bg)
                 .bg(app.theme.dim)
@@ -676,8 +687,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .bg(Color::Magenta)
                 .add_modifier(Modifier::BOLD),
         ),
-        InputMode::Radio => (
-            " RADIO ",
+        InputMode::Online => (
+            " ONLINE ",
             Style::default()
                 .fg(app.theme.bg)
                 .bg(Color::Blue)
@@ -701,10 +712,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let mid_text = if app.input_mode == InputMode::Search {
         format!(" / {} ", app.search_query)
-    } else if app.input_mode == InputMode::Radio {
-        " RADIO - STATIONS ".to_string()
+    } else if app.input_mode == InputMode::Online {
+        " ONLINE - STATIONS ".to_string()
     } else if app.input_mode == InputMode::CountrySelect {
-        " RADIO - SELECT COUNTRY ".to_string()
+        " ONLINE - SELECT COUNTRY ".to_string()
     } else if let Some(track) = &app.current_track {
         format!(" Playing: {} - {} ", track.artist, track.title)
     } else {

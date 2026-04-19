@@ -25,11 +25,12 @@ Just run the `chord` command. The app will automatically scan your `music_dir` f
 | Key | Action |
 | :--- | :--- |
 | `j` / `k` | Navigate lists |
-| `Enter` | Play selection (in Library/Radio) |
+| `Enter` | Play selection (in Library/Online) |
 | `Space` / `p` | Pause / Resume |
-| `Tab` | Context Select (Library/Radio) |
-| `Ctrl + r` | Radio Mode |
-| `Esc` | Return to Normal Mode |
+| `v` | Cycle Visualizer Mode |
+| `Tab` | Context Select (Library/Online) |
+| `Ctrl + r` | Online Mode |
+| `Esc` | Return to Offline Mode |
 
 ## Configuration
 

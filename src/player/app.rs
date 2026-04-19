@@ -109,6 +109,8 @@ pub struct App {
     pub needs_redraw: bool,
     /// A dynamic clock that advances based on audio energy for better visualizer sync.
     pub audio_clock: f64,
+    /// Flag to indicate if radio stations have been loaded yet
+    pub radio_loaded: bool,
 }
 
 impl App {
@@ -176,7 +178,7 @@ impl App {
         let theme = settings.config.read().unwrap().theme.to_theme();
         let initial_mode = InputMode::PlaylistSelect;
 
-        let mut app = App {
+        let app = App {
             all_tracks: tracks.clone(),
             filtered_tracks: tracks.clone(),
             playlists: playlists.clone(),
@@ -228,10 +230,9 @@ impl App {
             refresh_tx,
             needs_redraw: true,
             audio_clock: 0.0,
+            radio_loaded: false,
         };
 
-        app.load_radio_stations();
-        
         Ok(app)
     }
 
@@ -381,6 +382,7 @@ impl App {
 
         self.radio_stations = stations.clone();
         self.filter_radio();
+        self.radio_loaded = true;
     }
 
     pub fn filter_radio(&mut self) {

@@ -4,7 +4,6 @@ use crate::storage::index::LibraryIndex;
 use crate::player::audio::AudioPlayer;
 use anyhow::Result;
 use ratatui::widgets::ListState;
-use regex::Regex;
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -18,6 +17,7 @@ pub enum InputMode {
     PlaylistSelect,
     Config,
     Radio,
+    CountrySelect,
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -31,6 +31,7 @@ pub enum ConfigField {
     MusicDir,
     AudioDevice,
     AudioMode,
+    Visualizer,
     ScanAtStartup,
     ThemeBg,
     ThemeAccent,
@@ -57,7 +58,7 @@ pub struct TrackMetadataUpdate {
 }
 
 /// Application state and business logic for the TUI player.
-pub struct App<'a> {
+pub struct App {
     /// All tracks in the library, sorted by artist and album.
     pub all_tracks: Vec<Arc<TrackMetadata>>,
     /// Tracks currently displayed in the sidebar (either all, from a playlist, or filtered by search).
@@ -74,6 +75,8 @@ pub struct App<'a> {
     pub playlist_list_state: ListState,
     /// Selection state for the configuration menu.
     pub config_list_state: ListState,
+    /// Selection state for the radio country list.
+    pub country_list_state: ListState,
     /// List of fields available in config mode.
     pub config_fields: Vec<ConfigField>,
     /// List of available radio stations.
@@ -133,14 +136,13 @@ pub struct App<'a> {
     pub refresh_tx: mpsc::UnboundedSender<()>,
     /// Flag to indicate that the UI needs to be redrawn in the next frame.
     pub needs_redraw: bool,
-    pub _title: &'a str,
 }
 
-impl<'a> App<'a> {
+impl App {
     pub async fn new(
         settings: Arc<Settings>,
         index: Arc<LibraryIndex>,
-    ) -> Result<App<'a>> {
+    ) -> Result<App> {
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
 
@@ -176,6 +178,7 @@ impl<'a> App<'a> {
             ConfigField::MusicDir,
             ConfigField::AudioDevice,
             ConfigField::AudioMode,
+            ConfigField::Visualizer,
             ConfigField::ScanAtStartup,
             ConfigField::ThemeBg,
             ConfigField::ThemeAccent,
@@ -183,17 +186,17 @@ impl<'a> App<'a> {
         let mut config_list_state = ListState::default();
         config_list_state.select(Some(0));
 
+        let mut country_list_state = ListState::default();
+        country_list_state.select(Some(0));
+
         let audio = AudioPlayer::new();
         {
             let config = settings.config.read().unwrap();
             audio.set_volume(config.audio.volume);
             audio.set_mode(&config.audio.mode);
-
-            if let Some(preferred_name) = &config.audio.device_name {
-                audio.try_init_with_name(preferred_name);
-            } else {
-                audio.try_init();
-            }
+            
+            // Always start with the system default output for maximum reliability
+            audio.try_init();
         }
 
         let theme = settings.config.read().unwrap().theme.to_theme();
@@ -207,6 +210,7 @@ impl<'a> App<'a> {
             list_state,
             playlist_list_state,
             config_list_state,
+            country_list_state,
             config_fields,
             input_mode: InputMode::Normal,
             search_query: String::new(),
@@ -253,7 +257,6 @@ impl<'a> App<'a> {
             refresh_rx,
             refresh_tx,
             needs_redraw: true,
-            _title: crate::config::APP_NAME,
         })
     }
 
@@ -308,26 +311,60 @@ impl<'a> App<'a> {
             }
         }
 
-        // Add some default public radios if none or as extra
+        // Add more diverse default public radios
         if stations.is_empty() {
-            stations.push(crate::core::models::RadioStation {
-                name: "BBC Radio 1".into(),
-                url: "http://stream.live.vc.bbc.co.uk/bbc_radio_one_offline".into(),
-                country: "UK".into(),
-                tags: Some("Pop, Top 40".into()),
-            });
-            stations.push(crate::core::models::RadioStation {
-                name: "SomaFM Groove Salad".into(),
-                url: "http://ice1.somafm.com/groovesalad-128-mp3".into(),
-                country: "USA".into(),
-                tags: Some("Ambient, Chillout".into()),
-            });
-            stations.push(crate::core::models::RadioStation {
-                name: "FIP".into(),
-                url: "http://icecast.radiofrance.fr/fip-midfi.mp3".into(),
-                country: "France".into(),
-                tags: Some("Eclectic".into()),
-            });
+            let defaults = vec![
+                ("BBC Radio 1", "http://stream.live.vc.bbc.co.uk/bbc_radio_one_offline", "UK", "Pop, Top 40"),
+                ("BBC Radio 6 Music", "http://stream.live.vc.bbc.co.uk/bbc_6music_offline", "UK", "Alternative, Indie"),
+                ("SomaFM Groove Salad", "http://ice1.somafm.com/groovesalad-128-mp3", "USA", "Ambient, Chillout"),
+                ("SomaFM Drone Zone", "http://ice1.somafm.com/dronezone-128-mp3", "USA", "Ambient, Space"),
+                ("FIP", "https://stream.radiofrance.fr/fip/fip_hifi.m3u8?id=radiofrance", "France", "Eclectic"),
+                ("Radio Paradise (Main)", "http://stream.radioparadise.com/mp3-128", "USA", "Rock, Eclectic"),
+                ("KEXP", "https://kexp-mp3-128.streamguys1.com/kexp128.mp3", "USA", "Alternative, Indie"),
+                ("NTS Radio 1", "https://stream-relay-geo.ntslive.net/stream", "UK", "Experimental"),
+                ("Antenne Bayern", "http://stream.antenne.de/antenne", "Germany", "Pop"),
+                ("Jazz24", "https://live.jazz24.org/jazz24-mp3", "USA", "Jazz"),
+                ("Cinemix", "http://94.23.252.14:8067/live", "France", "Soundtrack"),
+                ("Swiss Groove", "https://icecast.argon.ch/swissgroove", "Switzerland", "Groove, Funk"),
+                ("Radio 105", "http://shoutcast.radio105.it:8000/105.mp3", "Italy", "Pop"),
+                ("Classic FM", "http://stream.live.vc.bbc.co.uk/bbc_radio_three_offline", "UK", "Classical"),
+                ("Acid House", "http://abm22.com.au:8000/CONTAINER1", "Australia", "Electronic, Acid"),
+                ("Afro House", "http://abm22.com.au:8000/CONTAINER53", "Australia", "Electronic, Afro"),
+                ("KissFM", "http://online.kissfm.ua/KissFM", "Ukraine", "Electronic, Trance"),
+                ("Paddygrooves", "https://a12.siar.us/radio/8230/radio.mp3", "Bali", "Downtempo, Lounge"),
+                ("Funky Ass Tunes", "https://ams1.reliastream.com/proxy/john12/stream", "Ireland", "Funk, Soul"),
+                ("Abaco Libros y Cafe", "https://radio30.virtualtronics.com/proxy/abaco", "Colombia", "Jazz, Bossa Nova"),
+                ("Blues Revue", "http://live.str3am.com:2240/live", "USA", "Blues"),
+                ("Jazz & Blues Radio", "https://jazzblues.ice.infomaniak.ch/jazzblues-high.mp3", "Switzerland", "Jazz, Blues"),
+                ("Jazz Eire", "https://visual.shoutca.st:8096/stream", "Ireland", "Jazz"),
+                ("Art Bell Radio", "http://stream.willstare.com:8450/", "USA", "Spoken Word, Paranormal"),
+                ("Roots FM", "http://138.201.198.218:8043/stream", "Germany", "Reggae, Dub"),
+                ("Double J", "http://live-radio01.mediahubaustralia.com/2jr/mp3/", "Australia", "Alternative"),
+                ("Svensk Folkmusik AkkA", "https://mediaserv38.live-streams.nl:8107/stream", "Sweden", "Folk"),
+                ("Ambient FM", "https://phoebe.streamerr.co:4140/ambient.mp3", "USA", "Ambient"),
+                ("Chillsky Chillhop", "https://chill.radioca.st/stream", "USA", "Lo-Fi, Hip Hop"),
+                ("Nature Radio", "https://nature-rex.radioca.st/stream", "Global", "Nature, Sounds"),
+                ("FreeCodeCamp Radio", "https://stream.freecodecamp.org/radio.mp3", "Global", "Lo-Fi, Focus"),
+                ("Robert Loglisci Radio", "https://radio.loglisci.com/listen/robertloglisciradio/radio.mp3", "Global", "Soundtrack"),
+                ("Cubic Space Radio", "http://music.cubicspace.fm:42424/mpeg", "Global", "Soul, Disco"),
+                ("Radio Regional Portugal", "http://193.70.40.92:8000/stream/2/", "Portugal", "News"),
+                ("Radio 100% Brasil", "http://193.70.40.92:8000/stream/11/", "Brazil", "Music"),
+                ("Da Hub Radio", "https://stream.dahubradio.co.uk:8848/stream", "UK", "Mixed"),
+                ("Voltaje Radio", "https://server5.mediasector.es:8070/voltaje", "Spain", "60s"),
+                ("La Diaria Radio", "https://radiolatina.live/8156/stream", "Global", "Misc"),
+                ("More Public Radio", "http://68.233.231.202:8107/stream", "Global", "Classic Jazz"),
+                ("Classic Hip Hop Radio", "http://73.191.71.239:8000/;", "Global", "Hip Hop"),
+                ("Rock Steady 94 Country", "http://streamingcenter.radiohosting.live:1830/stream", "Global", "Country"),
+            ];
+
+            for (name, url, country, tags) in defaults {
+                stations.push(crate::core::models::RadioStation {
+                    name: name.into(),
+                    url: url.into(),
+                    country: country.into(),
+                    tags: Some(tags.into()),
+                });
+            }
         }
 
         self.radio_stations = stations.clone();
@@ -367,6 +404,7 @@ impl<'a> App<'a> {
 
     pub async fn play_radio(&mut self, idx: usize) {
         if let Some(station) = self.filtered_stations.get(idx) {
+            self.is_starting = true;
             self.audio.play_stream(station.url.clone());
             self.is_playing = true;
             // For radio, we don't have local track info, duration etc.
@@ -488,9 +526,17 @@ impl<'a> App<'a> {
 
     pub async fn toggle_playback(&mut self) {
         if self.audio.is_empty() {
-            if let Some(idx) = self.list_state.selected() {
-                self.is_starting = true;
-                self.play_track(idx).await;
+            match self.input_mode {
+                InputMode::Radio | InputMode::CountrySelect => {
+                    if let Some(idx) = self.radio_list_state.selected() {
+                        self.play_radio(idx).await;
+                    }
+                }
+                _ => {
+                    if let Some(idx) = self.list_state.selected() {
+                        self.play_track(idx).await;
+                    }
+                }
             }
         } else {
             if self.is_playing {
@@ -636,15 +682,23 @@ impl<'a> App<'a> {
     }
 
     fn parse_lrc(&mut self, content: &str) {
-        let re = Regex::new(r"\[(\d+):(\d+(?:\.\d+)?)\](.*)").unwrap();
         for line in content.lines() {
-            if let Some(caps) = re.captures(line) {
-                let mins = caps[1].parse::<u64>().unwrap_or(0);
-                let secs = caps[2].parse::<f64>().unwrap_or(0.0);
-                self.lyrics.push(crate::player::audio::LyricLine {
-                    time: Duration::from_secs(mins * 60) + Duration::from_secs_f64(secs),
-                    text: caps[3].trim().to_string(),
-                });
+            if line.starts_with('[') && line.contains(']') {
+                let parts: Vec<&str> = line.splitn(2, ']').collect();
+                if parts.len() == 2 {
+                    let time_str = parts[0].trim_start_matches('[');
+                    let text = parts[1].trim();
+
+                    let time_parts: Vec<&str> = time_str.split(':').collect();
+                    if time_parts.len() == 2 {
+                        let mins = time_parts[0].parse::<u64>().unwrap_or(0);
+                        let secs = time_parts[1].parse::<f64>().unwrap_or(0.0);
+                        self.lyrics.push(crate::player::audio::LyricLine {
+                            time: Duration::from_secs(mins * 60) + Duration::from_secs_f64(secs),
+                            text: text.to_string(),
+                        });
+                    }
+                }
             }
         }
         self.lyrics.sort_by_key(|l| l.time);
@@ -656,6 +710,13 @@ impl<'a> App<'a> {
                 let current = self.audio.mode.lock().unwrap().clone();
                 let next = if current == "PIPEWIRE" { "ALSA" } else { "PIPEWIRE" };
                 self.audio.set_mode(next);
+                self.save_config().await;
+            }
+            ConfigField::Visualizer => {
+                {
+                    let mut config = self.settings.config.write().unwrap();
+                    config.audio.visualizer = config.audio.visualizer.next();
+                }
                 self.save_config().await;
             }
             ConfigField::ScanAtStartup => {
@@ -724,7 +785,7 @@ impl<'a> App<'a> {
         let has_error = self.audio.has_error();
         let is_init = self.audio.is_initializing();
 
-        if !is_empty {
+        if !is_empty && self.is_starting {
             self.is_starting = false;
         }
 

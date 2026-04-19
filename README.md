@@ -10,9 +10,10 @@
 - **Local Playback**: A TUI music player for FLAC, MP3, WAV, and more.
 - **Indexing**: Scans local folders and maintains a database for track access.
 - **Album Art**: High-fidelity image preview in the TUI (requires a terminal with image support like Kitty, iTerm2, or WezTerm).
-- **Metadata**: Shows technical specs (bitrate, sample rate, etc.) and lyrics from files.
-- **Visualizer**: Real-time high-density visualizer that reacts to playback.
+- **Visualizer**: Real-time high-density visualizer with **10 different modes** (Wave, Bars, Matrix, Particles, etc.).
 - **Radio Mode**: Stream online radio stations (Ctrl+R). Cycle by country or search all stations.
+- **Dynamic Radio Art**: Procedural animated art for live streams.
+- **Custom Themes**: Full hex-code support for personalization via the configuration menu (Ctrl+C).
 
 <br clear="right"/>
 
@@ -20,18 +21,18 @@
 
 Just run the `chord` command. The app will automatically scan your `music_dir` for files, update its local cache (`library_cache.toml`), and open the TUI player for you to browse and play your music.
 
-## Installation
+## Controls
 
-```bash
-chmod +x install.sh
-./install.sh
-```
-Or use the `Makefile`:
-
-- `make setup`: Install dependencies.
-- `make build`: Build the player.
-- `make test`: Run tests.
-- `make lint`: Run linting.
+| Key | Action |
+| :--- | :--- |
+| `j` / `k` | Navigate lists |
+| `Enter` | Play selection |
+| `Space` / `p` | Pause / Resume |
+| `Ctrl + c` | Configuration Menu |
+| `Ctrl + r` | Radio Mode |
+| `Tab` | Selection Context (Playlists / Countries) |
+| `r` | Rescan / Refresh |
+| `Esc` | Return to Normal Mode |
 
 ## Configuration
 
@@ -42,18 +43,14 @@ Settings are in `~/.config/chord/config.toml`.
 music_dir = "~/Music"
 scan_at_startup = true
 
-[format]
-filename_format = "{artist}/{year} - {album}/{track}. {title}"
-
 [audio]
-device_name = "ALSA: Default"
+visualizer = "Matrix"
 volume = 1.0
+```
 
 [theme]
 bg = "#121212"
-fg = "#CCCCCC"
-accent = "#1BFD9C"
-accent_dim = "#66B2B2"
+# ... hex colors
 ```
 
 ## License

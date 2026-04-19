@@ -45,7 +45,7 @@ pub async fn run_player(settings: Arc<Settings>, index: Arc<LibraryIndex>) -> Re
 
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
-    app: &mut App<'_>,
+    app: &mut App,
 ) -> io::Result<()> {
     let tick_rate = Duration::from_millis(DEFAULT_TICK_RATE_MS);
     let mut last_tick = Instant::now();
@@ -84,59 +84,65 @@ async fn run_app<B: Backend>(
 
                     app.needs_redraw = true;
 
-                    // Global keys (Playback, Volume, etc.)
+                    // --- GLOBAL KEYS (Processed in all modes) ---
                     if key.code == KEY_CONFIG_MODE && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                        app.input_mode = InputMode::Config;
+                        app.input_mode = if app.input_mode == InputMode::Config { InputMode::Normal } else { InputMode::Config };
+                        continue;
                     } else if key.code == KEY_RADIO_MODE && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
-                        app.input_mode = InputMode::Radio;
-                        app.load_radio_stations();
+                        if app.input_mode == InputMode::Radio {
+                            app.input_mode = InputMode::Normal;
+                        } else {
+                            app.input_mode = InputMode::Radio;
+                            app.load_radio_stations();
+                        }
+                        continue;
+                    } else if key.code == KEY_BACK {
+                        app.input_mode = InputMode::Normal;
+                        continue;
                     } else if key.code == KEY_QUIT {
                         return Ok(());
                     } else if key.code == KEY_TOGGLE_PLAYBACK_1 || key.code == KEY_TOGGLE_PLAYBACK_2 {
                         app.toggle_playback().await;
-                    } else if key.code == KEY_NEXT_TRACK_1 || key.code == KEY_NEXT_TRACK_2 {
-                        app.next();
-                        if let Some(i) = app.list_state.selected() {
-                            app.play_track(i).await;
-                        }
-                    } else if key.code == KEY_PREV_TRACK_1 || key.code == KEY_PREV_TRACK_2 {
-                        app.previous();
-                        if let Some(i) = app.list_state.selected() {
-                            app.play_track(i).await;
-                        }
+                        continue;
                     } else if key.code == KEY_VOL_UP_1 || key.code == KEY_VOL_UP_2 {
                         app.volume = (app.volume + 0.05).min(1.0);
                         app.audio.set_volume(app.volume);
                         app.save_config().await;
+                        continue;
                     } else if key.code == KEY_VOL_DOWN {
                         app.volume = (app.volume - 0.05).max(0.0);
                         app.audio.set_volume(app.volume);
                         app.save_config().await;
+                        continue;
                     } else if key.code == KEY_CYCLE_DEVICE {
                         app.audio.next_device();
                         app.save_config().await;
-                    } else if key.code == KEY_REFRESH {
-                        let index = app.index.clone();
-                        let music_dir = app.settings.config.read().unwrap().library.music_dir.clone();
-                        let refresh_tx = app.refresh_tx.clone();                        tokio::spawn(async move {
-                            let _ = index.update_index(&music_dir).await;
-                            let _ = refresh_tx.send(());
-                        });
+                        continue;
                     }
 
-                    match app.input_mode {                        InputMode::Search => {
-                            if key.code == KEY_CONFIRM || key.code == KEY_BACK {
+                    // --- MODE SPECIFIC KEYS ---
+                    match app.input_mode {
+                        InputMode::Search => {
+                            if key.code == KEY_CONFIRM {
                                 app.input_mode = InputMode::Normal;
                             } else if let KeyCode::Char(c) = key.code {
                                 app.search_query.push(c);
-                                app.filter_tracks();
+                                if app.input_mode == InputMode::Radio {
+                                    app.filter_radio();
+                                } else {
+                                    app.filter_tracks();
+                                }
                             } else if key.code == KeyCode::Backspace {
                                 app.search_query.pop();
-                                app.filter_tracks();
+                                if app.input_mode == InputMode::Radio {
+                                    app.filter_radio();
+                                } else {
+                                    app.filter_tracks();
+                                }
                             }
                         }
                         InputMode::PlaylistSelect => {
-                            if key.code == KEY_BACK || key.code == KEY_PLAYLIST_MODE {
+                            if key.code == KEY_PLAYLIST_MODE {
                                 app.input_mode = InputMode::Normal;
                             } else if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
                                 app.next_playlist();
@@ -154,9 +160,7 @@ async fn run_app<B: Backend>(
                             }
                         }
                         InputMode::Config => {
-                            if key.code == KEY_BACK {
-                                app.input_mode = InputMode::Normal;
-                            } else if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
+                            if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
                                 let i = match app.config_list_state.selected() {
                                     Some(i) => (i + 1) % app.config_fields.len(),
                                     None => 0,
@@ -176,9 +180,7 @@ async fn run_app<B: Backend>(
                             }
                         }
                         InputMode::Radio => {
-                            if key.code == KEY_BACK {
-                                app.input_mode = InputMode::Normal;
-                            } else if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
+                            if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
                                 let len = app.filtered_stations.len();
                                 if len > 0 {
                                     let i = match app.radio_list_state.selected() {
@@ -197,17 +199,10 @@ async fn run_app<B: Backend>(
                                     app.radio_list_state.select(Some(i));
                                 }
                             } else if key.code == KEY_PLAYLIST_MODE {
-                                // Toggle view: All -> Country (Next Country) -> ... -> All
-                                if app.radio_view == RadioView::All {
-                                    app.radio_view = RadioView::Country;
-                                    app.radio_country_idx = 0;
-                                } else {
-                                    app.radio_country_idx += 1;
-                                    if app.radio_country_idx >= app.radio_countries.len() {
-                                        app.radio_view = RadioView::All;
-                                    }
+                                app.input_mode = InputMode::CountrySelect;
+                                if !app.radio_countries.is_empty() {
+                                    app.country_list_state.select(Some(0));
                                 }
-                                app.filter_radio();
                             } else if key.code == KEY_CONFIRM {
                                 if let Some(i) = app.radio_list_state.selected() {
                                     app.play_radio(i).await;
@@ -216,6 +211,35 @@ async fn run_app<B: Backend>(
                                 app.input_mode = InputMode::Search;
                                 app.search_query.clear();
                                 app.filter_radio();
+                            }
+                        }
+                        InputMode::CountrySelect => {
+                            if key.code == KEY_PLAYLIST_MODE {
+                                app.input_mode = InputMode::Radio;
+                            } else if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
+                                let len = app.radio_countries.len() + 1;
+                                let i = match app.country_list_state.selected() {
+                                    Some(i) => (i + 1) % len,
+                                    None => 0,
+                                };
+                                app.country_list_state.select(Some(i));
+                            } else if key.code == KEY_LIST_UP_VIM || key.code == KEY_LIST_UP {
+                                let len = app.radio_countries.len() + 1;
+                                let i = match app.country_list_state.selected() {
+                                    Some(i) => (i + len - 1) % len,
+                                    None => 0,
+                                };
+                                app.country_list_state.select(Some(i));
+                            } else if key.code == KEY_CONFIRM {
+                                let idx = app.country_list_state.selected().unwrap_or(0);
+                                if idx == 0 {
+                                    app.radio_view = RadioView::All;
+                                } else if let Some(_) = app.radio_countries.get(idx - 1) {
+                                    app.radio_view = RadioView::Country;
+                                    app.radio_country_idx = idx - 1;
+                                }
+                                app.filter_radio();
+                                app.input_mode = InputMode::Radio;
                             }
                         }
                         InputMode::Normal => {
@@ -233,6 +257,24 @@ async fn run_app<B: Backend>(
                                 if let Some(i) = app.list_state.selected() {
                                     app.play_track(i).await;
                                 }
+                            } else if key.code == KEY_NEXT_TRACK_1 || key.code == KEY_NEXT_TRACK_2 {
+                                app.next();
+                                if let Some(i) = app.list_state.selected() {
+                                    app.play_track(i).await;
+                                }
+                            } else if key.code == KEY_PREV_TRACK_1 || key.code == KEY_PREV_TRACK_2 {
+                                app.previous();
+                                if let Some(i) = app.list_state.selected() {
+                                    app.play_track(i).await;
+                                }
+                            } else if key.code == KEY_REFRESH {
+                                let index = app.index.clone();
+                                let music_dir = app.settings.config.read().unwrap().library.music_dir.clone();
+                                let refresh_tx = app.refresh_tx.clone();
+                                tokio::spawn(async move {
+                                    let _ = index.update_index(&music_dir).await;
+                                    let _ = refresh_tx.send(());
+                                });
                             }
                         }
                     }

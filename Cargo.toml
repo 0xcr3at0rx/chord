@@ -5,7 +5,7 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.36", features = ["rt-multi-thread", "macros", "sync", "io-util", "process", "time"] }
-reqwest = { version = "0.12", features = ["blocking", "stream"] }
+reqwest = { version = "0.12", features = ["blocking", "stream", "rustls-tls"] }
 serde = { version = "1.0", features = ["derive"] }
 toml = "0.8"
 anyhow = "1.0"
@@ -14,7 +14,6 @@ lofty = "0.21"
 symphonia = { version = "0.5", features = ["all"] }
 chrono = { version = "0.4", features = ["serde"] }
 directories = "5.0"
-regex = "1.10"
 walkdir = "2.5"
 uuid = { version = "1.7", features = ["v4"] }
 log = "0.4"

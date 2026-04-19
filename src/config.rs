@@ -2,7 +2,6 @@ use ratatui::style::Color;
 use crossterm::event::KeyCode;
 
 // --- APPLICATION CONSTANTS ---
-pub const APP_NAME: &str = "CHORD";
 pub const DEFAULT_TICK_RATE_MS: u64 = 50;
 pub const KEY_DEBOUNCE_MS: u128 = 100;
 
@@ -19,18 +18,6 @@ pub struct Theme {
     pub dim: Color,
     pub status_bg: Color,
 }
-
-pub const THEME: Theme = Theme {
-    bg: Color::Rgb(18, 18, 18),
-    fg: Color::Rgb(204, 204, 204),
-    cursor_bg: Color::Rgb(42, 42, 42),
-    cursor_fg: Color::Rgb(221, 221, 221),
-    accent: Color::Rgb(27, 253, 156),
-    accent_dim: Color::Rgb(102, 178, 178),
-    critical: Color::Rgb(186, 9, 89),
-    dim: Color::Rgb(122, 122, 122),
-    status_bg: Color::Rgb(42, 42, 42),
-};
 
 // --- KEYBINDINGS ---
 // Global Navigation & Playback
@@ -52,8 +39,8 @@ pub const KEY_CYCLE_DEVICE: KeyCode = KeyCode::Char('d');
 pub const KEY_SEARCH_MODE: KeyCode = KeyCode::Char('/');
 pub const KEY_PLAYLIST_MODE: KeyCode = KeyCode::Tab;
 pub const KEY_REFRESH: KeyCode = KeyCode::Char('r');
-pub const KEY_CONFIG_MODE: KeyCode = KeyCode::Char('c'); // Used with Ctrl
-pub const KEY_RADIO_MODE: KeyCode = KeyCode::Char('r'); // Used with Ctrl
+pub const KEY_CONFIG_MODE: KeyCode = KeyCode::Char('c');
+pub const KEY_RADIO_MODE: KeyCode = KeyCode::Char('r');
 
 // List Navigation
 pub const KEY_LIST_UP: KeyCode = KeyCode::Up;

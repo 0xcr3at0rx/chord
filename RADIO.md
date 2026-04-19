@@ -13,7 +13,8 @@ Press `Ctrl + r` to enter Radio Mode.
 - **Filtering**: Press `/` in Radio Mode to search for specific stations.
 - **Views**: 
     - **All Radios**: Shows all available stations.
-    - **Country-wise**: Press `Tab` to cycle through stations filtered by country.
+    - **Country-wise**: Press `Tab` to toggle between showing all radios or filtering by the current country.
+    - **Cycle Countries**: Use `Left` / `Right` (or `h` / `l`) to cycle through countries when in Country-wise view.
 
 ## Custom Configuration (`radio.toml`)
 
@@ -37,8 +38,8 @@ tags = "Electronic, Techno"
 
 | Key | Action |
 | :--- | :--- |
-| `Ctrl` + `r` | Enter Radio Mode |
-| `Tab` | Cycle View (All -> Country A -> Country B -> ...) |
+| `Ctrl` + `r` | Enter Radio Mode / Toggle |
+| `Tab` | Open Country Selection |
 | `j` / `k` | Navigate station list |
 | `Enter` | Start streaming selected station |
 | `Esc` | Return to Normal Mode |

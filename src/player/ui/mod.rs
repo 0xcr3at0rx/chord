@@ -4,13 +4,12 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, List, ListItem, Padding, Paragraph, Wrap},
     Frame,
 };
 use ratatui_image::{Resize, StatefulImage};
 
 pub mod components;
-pub mod theme;
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -108,6 +107,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     crate::player::app::ConfigField::MusicDir => ("Music Dir", format!("{}", config.library.music_dir.display())),
                     crate::player::app::ConfigField::AudioDevice => ("Audio Device", app.audio.device_name.lock().unwrap().clone().unwrap_or("Default".to_string())),
                     crate::player::app::ConfigField::AudioMode => ("Audio Mode", app.audio.mode.lock().unwrap().clone()),
+                    crate::player::app::ConfigField::Visualizer => ("Visualizer", format!("{:?}", config.audio.visualizer)),
                     crate::player::app::ConfigField::ScanAtStartup => ("Scan at Startup", format!("{}", config.library.scan_at_startup)),
                     crate::player::app::ConfigField::ThemeBg => ("Theme BG", config.theme.bg.clone()),
                     crate::player::app::ConfigField::ThemeAccent => ("Theme Accent", config.theme.accent.clone()),
@@ -164,6 +164,30 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 )
                 .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
+        } else if app.input_mode == InputMode::CountrySelect {
+            let mut items = vec![ListItem::new(Line::from(vec![
+                Span::styled("  ", Style::default()),
+                Span::styled("All Radios", Style::default()),
+            ]))];
+
+            for country in &app.radio_countries {
+                items.push(ListItem::new(Line::from(vec![
+                    Span::styled("  ", Style::default()),
+                    Span::styled(country, Style::default()),
+                ])));
+            }
+
+            let sidebar = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(app.theme.status_bg))
+                        .title(Line::from(vec![
+                            Span::styled(" SELECT COUNTRY ", Style::default().bg(Color::Magenta).fg(app.theme.bg)),
+                        ])),
+                )
+                .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
+            f.render_stateful_widget(sidebar, content_layout[0], &mut app.country_list_state);
         } else if app.filtered_tracks.is_empty() {
             let empty_msg = vec![
                 Line::from(""),
@@ -252,6 +276,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(Block::default().padding(Padding::uniform(1)));
             f.render_widget(err_block, main_area_layout[0]);
         } else if let Some(track) = &app.current_track {
+            let is_radio = track.status.as_deref() == Some("radio");
             // Dashboard
             let dashboard_block = Block::default()
                 .borders(Borders::BOTTOM)
@@ -264,13 +289,35 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let dash_layout = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([
-                    Constraint::Length(22), // Image Area (slightly wider for better fit)
+                    Constraint::Length(22), // Image Area
                     Constraint::Min(0),     // Info Area
                 ])
                 .split(dashboard_area);
 
-            // --- IMAGE PREVIEW ---
-            if let Some(img) = &app.cached_image {
+            // --- IMAGE / RADIO ICON PREVIEW ---
+            if is_radio {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                    
+                let art_lines = crate::player::ui::components::render_radio_art(
+                    app.is_playing,
+                    app.is_starting,
+                    20, // width
+                    10, // height
+                    now,
+                    &track.title,
+                    &app.theme,
+                );
+                
+                f.render_widget(
+                    Paragraph::new(art_lines)
+                        .alignment(Alignment::Center)
+                        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(app.theme.status_bg))),
+                    dash_layout[0]
+                );
+            } else if let Some(img) = &app.cached_image {
                 if app.image_state.is_none() {
                     let mut picker = app
                         .image_picker
@@ -294,16 +341,22 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .direction(Direction::Vertical)
                 .constraints([
                     Constraint::Length(1), // Title
-                    Constraint::Length(1), // Artist
-                    Constraint::Length(1), // Album
-                    Constraint::Length(3), // Visualizer (Fixed height for single row)
-                    Constraint::Min(0),    // Tech Footer (Moves up)
+                    Constraint::Length(1), // Artist / Country
+                    Constraint::Length(1), // Album / Tags
+                    Constraint::Length(3), // Visualizer
+                    Constraint::Min(0),    // Tech Footer
                 ])
                 .split(dash_layout[1]);
 
             // --- ROW 1: Title ---
             f.render_widget(
-                Paragraph::new(Line::from(vec![Span::styled(
+                Paragraph::new(Line::from(vec![
+                    if is_radio {
+                        Span::styled("LIVE: ", Style::default().fg(app.theme.critical).add_modifier(Modifier::BOLD))
+                    } else {
+                        Span::raw("")
+                    },
+                    Span::styled(
                     &track.title,
                     Style::default()
                         .fg(app.theme.accent)
@@ -314,9 +367,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             );
 
             // --- ROW 2: Artist ---
+            let artist_label = if is_radio { "Station: " } else { "Artist:  " };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("Artist: ", Style::default().fg(app.theme.dim)),
+                    Span::styled(artist_label, Style::default().fg(app.theme.dim)),
                     Span::styled(&track.artist, Style::default().fg(app.theme.fg)),
                 ]))
                 .alignment(Alignment::Left),
@@ -324,9 +378,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             );
 
             // --- ROW 3: Album ---
+            let album_label = if is_radio { "Tags:    " } else { "Album:   " };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("Album:  ", Style::default().fg(app.theme.dim)),
+                    Span::styled(album_label, Style::default().fg(app.theme.dim)),
                     Span::styled(
                         track.album.as_deref().unwrap_or("Unknown"),
                         Style::default().fg(app.theme.fg).add_modifier(Modifier::ITALIC),
@@ -345,7 +400,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .unwrap_or_default()
                 .as_millis() as u64;
 
-            let vis_line = render_visualizer(app.is_playing, vis_width, now, app.volume as f64);
+            let visualizer_mode = app.settings.config.read().unwrap().audio.visualizer;
+            let vis_line = render_visualizer(app.is_playing, vis_width, now, app.volume as f64, &app.theme, visualizer_mode);
             f.render_widget(
                 Paragraph::new(vec![Line::from(""), Line::from(vis_line), Line::from("")])
                     .alignment(Alignment::Center),
@@ -354,28 +410,34 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
             // --- ROW 5: Tech Footer ---
             // Determine track index and total based on the playlist/context from which playback started
-            let (track_idx, total_count) = {
+            let (track_idx, total_count) = if is_radio {
+                (None, 0)
+            } else {
                 let idx = app.playback_track_list.iter().position(|t| t.track_id == track.track_id);
                 (idx, app.playback_track_list.len())
             };
 
-            let mut tech_spans = vec![
-                Span::styled(
-                    format!(
-                        " {:02} / {:02} ",
-                        track_idx.map(|i| i + 1).unwrap_or(0),
-                        total_count
-                    ),
-                    Style::default()
-                        .fg(app.theme.bg)
-                        .bg(app.theme.accent_dim)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-            ];
+            let mut tech_spans = Vec::new();
+            
+            if !is_radio {
+                tech_spans.push(
+                    Span::styled(
+                        format!(
+                            " {:02} / {:02} ",
+                            track_idx.map(|i| i + 1).unwrap_or(0),
+                            total_count
+                        ),
+                        Style::default()
+                            .fg(app.theme.bg)
+                            .bg(app.theme.accent_dim)
+                            .add_modifier(Modifier::BOLD),
+                    )
+                );
+                tech_spans.push(Span::raw("  "));
+            }
 
             if app.sample_rate > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
+                tech_spans.push(Span::styled(" * ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}Hz", app.sample_rate),
                     Style::default().fg(app.theme.dim),
@@ -383,7 +445,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
 
             if app.bit_depth > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
+                tech_spans.push(Span::styled(" * ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}bit", app.bit_depth),
                     Style::default().fg(app.theme.dim),
@@ -391,7 +453,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
 
             if app.bitrate > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
+                tech_spans.push(Span::styled(" * ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}kbps", app.bitrate),
                     Style::default().fg(app.theme.dim),
@@ -399,7 +461,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
 
             if app.channels > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
+                tech_spans.push(Span::styled(" * ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}ch", app.channels),
                     Style::default().fg(app.theme.dim),
@@ -417,7 +479,20 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
         if app.last_error.is_none() {
             let mut lyrics_lines = Vec::new();
-            if app.lyrics.is_empty() || (app.lyrics.len() == 1 && app.lyrics[0].text == "NO LYRICS")
+            let is_radio = app.current_track.as_ref().map(|t| t.status.as_deref() == Some("radio")).unwrap_or(false);
+            if is_radio {
+                lyrics_lines.push(Line::from(vec![Span::styled(
+                    "--- LIVE BROADCAST ---",
+                    Style::default()
+                        .fg(app.theme.dim)
+                        .add_modifier(Modifier::BOLD),
+                )]));
+                lyrics_lines.push(Line::from(""));
+                lyrics_lines.push(Line::from(vec![Span::styled(
+                    "Select a station and press Enter to play",
+                    Style::default().fg(app.theme.dim),
+                )]));
+            } else if app.lyrics.is_empty() || (app.lyrics.len() == 1 && app.lyrics[0].text == "NO LYRICS")
             {
                 lyrics_lines.push(Line::from(vec![Span::styled(
                     "*  INSTRUMENTAL  *",
@@ -451,7 +526,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         )));
                         lyrics_lines.push(Line::from(""));
                     } else {
-                        lyrics_lines.push(Line::from(Span::styled(&l.text, style)));
+                        lyrics_lines.push(Line::from(Span::styled(l.text.to_uppercase(), style)));
                     }
                 }
             }
@@ -468,6 +543,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     }
 
     // 3. HELIX-STYLE BOTTOM BAR / HELP OVERLAY
+    let is_radio = app.current_track.as_ref().map(|t| t.status.as_deref() == Some("radio")).unwrap_or(false);
+    
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -515,6 +592,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .bg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
         ),
+        InputMode::CountrySelect => (
+            " COUNTRY ",
+            Style::default()
+                .fg(app.theme.bg)
+                .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
     };
 
     f.render_widget(
@@ -530,6 +614,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         " CONFIG - SETTINGS ".to_string()
     } else if app.input_mode == InputMode::Radio {
         " RADIO - STATIONS ".to_string()
+    } else if app.input_mode == InputMode::CountrySelect {
+        " RADIO - SELECT COUNTRY ".to_string()
     } else if let Some(track) = &app.current_track {
         format!(" Playing: {} - {} ", track.artist, track.title)
     } else {
@@ -541,18 +627,31 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     );
 
     // Progress Mini-Gauge
-    let progress_bar = Gauge::default()
-        .gauge_style(Style::default().fg(app.theme.accent).bg(app.theme.status_bg))
-        .use_unicode(true)
-        .ratio(app.progress as f64)
-        .label("");
-    f.render_widget(progress_bar, status_chunks[2]);
+    if !is_radio {
+        f.render_widget(
+            Paragraph::new(" [ LOCAL PLAYBACK ] ")
+                .style(Style::default().fg(app.theme.accent).bg(app.theme.status_bg))
+                .alignment(Alignment::Center),
+            status_chunks[2],
+        );
+    } else {
+        f.render_widget(
+            Paragraph::new(" [ LIVE STREAM ] ")
+                .style(Style::default().fg(app.theme.accent).bg(app.theme.status_bg))
+                .alignment(Alignment::Center),
+            status_chunks[2],
+        );
+    }
 
-    let duration_str = format!(
-        " {}/{} ",
-        format_duration(app.current_pos),
-        format_duration(app.current_track_duration)
-    );
+    let duration_str = if is_radio {
+        " --:-- / --:-- ".to_string()
+    } else {
+        format!(
+            " {}/{} ",
+            format_duration(app.current_pos),
+            format_duration(app.current_track_duration)
+        )
+    };
     f.render_widget(
         Paragraph::new(duration_str)
             .alignment(Alignment::Right)

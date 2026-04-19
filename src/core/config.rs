@@ -28,6 +28,7 @@ pub struct AudioConfig {
     pub device_name: Option<String>,
     pub volume: f32,
     pub mode: String,
+    pub visualizer: crate::player::ui::components::VisualizerMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -135,6 +136,7 @@ impl Default for AudioConfig {
             device_name: None,
             volume: 1.0,
             mode: "PIPEWIRE".to_string(),
+            visualizer: crate::player::ui::components::VisualizerMode::Wave,
         }
     }
 }

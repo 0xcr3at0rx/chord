@@ -2,10 +2,112 @@ use anyhow::Result;
 use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use std::fs::File;
-use std::io::BufReader;
+use std::io::{BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::Duration;
+
+/// A wrapper for Read types that implements Seek by allowing only forward seeks (and limited backward seeks if we buffer).
+/// This is required for rodio::Decoder to work with network streams.
+struct StreamingReader<R: Read> {
+    inner: R,
+    pos: u64,
+    header_buffer: Vec<u8>,
+    header_read_pos: usize,
+}
+
+impl<R: Read> StreamingReader<R> {
+    fn new(mut inner: R) -> Self {
+        let mut header_buffer = Vec::with_capacity(1048576); // 1MB buffer for headers
+        let mut temp_buf = [0u8; 16384];
+        for _ in 0..64 { // Read up to 1MB in chunks for extremely reliable detection
+            match inner.read(&mut temp_buf) {
+                Ok(0) => break,
+                Ok(n) => header_buffer.extend_from_slice(&temp_buf[..n]),
+                Err(_) => break,
+            }
+        }
+        log::info!("StreamingReader: buffered {} bytes of header", header_buffer.len());
+        Self { 
+            inner, 
+            pos: header_buffer.len() as u64,
+            header_buffer,
+            header_read_pos: 0,
+        }
+    }
+}
+
+impl<R: Read> Read for StreamingReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if self.header_read_pos < self.header_buffer.len() {
+            let n = std::cmp::min(buf.len(), self.header_buffer.len() - self.header_read_pos);
+            buf[..n].copy_from_slice(&self.header_buffer[self.header_read_pos..self.header_read_pos + n]);
+            self.header_read_pos += n;
+            Ok(n)
+        } else {
+            let n = self.inner.read(buf)?;
+            self.pos += n as u64;
+            Ok(n)
+        }
+    }
+}
+
+impl<R: Read> Seek for StreamingReader<R> {
+    fn seek(&mut self, pos: SeekFrom) -> std::io::Result<u64> {
+        let current_total_pos = if self.header_read_pos < self.header_buffer.len() {
+            self.header_read_pos as u64
+        } else {
+            self.pos
+        };
+
+        match pos {
+            SeekFrom::Start(n) => {
+                if n < self.header_buffer.len() as u64 {
+                    self.header_read_pos = n as usize;
+                    Ok(n)
+                } else if n == current_total_pos {
+                    Ok(current_total_pos)
+                } else if n > self.pos {
+                    let to_skip = n - self.pos;
+                    std::io::copy(&mut self.inner.by_ref().take(to_skip), &mut std::io::sink())?;
+                    self.pos = n;
+                    self.header_read_pos = self.header_buffer.len();
+                    Ok(self.pos)
+                } else {
+                    // Can't seek back beyond the header buffer
+                    Ok(current_total_pos)
+                }
+            }
+            SeekFrom::Current(n) => {
+                if n == 0 { return Ok(current_total_pos); }
+                
+                if n < 0 {
+                    let back = (-n) as u64;
+                    if back <= current_total_pos && current_total_pos - back < self.header_buffer.len() as u64 {
+                        self.header_read_pos = (current_total_pos - back) as usize;
+                        Ok(current_total_pos - back)
+                    } else {
+                        Ok(current_total_pos)
+                    }
+                } else {
+                    let n_u64 = n as u64;
+                    if self.header_read_pos + n_u64 as usize <= self.header_buffer.len() {
+                        self.header_read_pos += n_u64 as usize;
+                        Ok(self.header_read_pos as u64)
+                    } else {
+                        let remaining_header = (self.header_buffer.len() - self.header_read_pos) as u64;
+                        let to_skip_from_inner = n_u64 - remaining_header;
+                        std::io::copy(&mut self.inner.by_ref().take(to_skip_from_inner), &mut std::io::sink())?;
+                        self.pos += to_skip_from_inner;
+                        self.header_read_pos = self.header_buffer.len();
+                        Ok(self.pos)
+                    }
+                }
+            }
+            SeekFrom::End(_) => Ok(current_total_pos),
+        }
+    }
+}
 
 // --- Manual ALSA FFI Implementation ---
 #[cfg(target_os = "linux")]
@@ -47,11 +149,12 @@ pub struct LyricLine {
 enum AudioCmd {
     Init(Option<String>),
     Play(PathBuf),
-    PlayStream(String),
+    PlayStream(String, u64),
     SetVolume(f32),
     Pause,
     Resume,
     NextDevice,
+    RegisterRadioSink(Sink, u64),
 }
 
 pub struct AudioPlayer {
@@ -68,7 +171,9 @@ struct AudioBackend {
     stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     sink: Option<Sink>,
+    radio_sink: Option<Sink>,
     volume: f32,
+    active_radio_request_id: u64,
     device_name_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     is_empty_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     has_error_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -92,13 +197,16 @@ impl AudioPlayer {
         let backend_error = has_error.clone();
         let backend_init = is_initializing.clone();
         let backend_last_err = last_error.clone();
+        let backend_tx = tx.clone();
         
         std::thread::spawn(move || {
             let mut backend = AudioBackend {
                 stream: None,
                 handle: None,
                 sink: None,
+                radio_sink: None,
                 volume: 1.0,
+                active_radio_request_id: 0,
                 device_name_shared: backend_name,
                 is_empty_shared: backend_empty,
                 has_error_shared: backend_error,
@@ -140,19 +248,72 @@ impl AudioPlayer {
                         }
                         backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                     }
-                    Ok(AudioCmd::PlayStream(url)) => {
-                        let res = backend.play_stream(url);
-                        if let Err(e) = &res {
-                            log::error!("Stream playback failed: {}", e);
-                            *backend.last_error_shared.lock().unwrap() = Some(e.clone());
+                    Ok(AudioCmd::PlayStream(url, request_id)) => {
+                        backend.stop_sink();
+                        backend.active_radio_request_id = request_id;
+                        
+                        let tx_clone = backend_tx.clone();
+                        let handle_shared = backend.handle.clone();
+                        let volume = backend.volume;
+                        let last_error_shared = backend.last_error_shared.clone();
+                        let has_error_shared = backend.has_error_shared.clone();
+
+                        std::thread::spawn(move || {
+                            if let Some(handle) = handle_shared {
+                                let res = (|| -> Result<Sink, String> {
+                                    let response = reqwest::blocking::Client::builder()
+                                        .user_agent("Chord/1.1 (https://github.com/0xcr3at0rx/chord)")
+                                        .timeout(Duration::from_secs(20))
+                                        .redirect(reqwest::redirect::Policy::limited(10))
+                                        .build()
+                                        .map_err(|e| format!("Client: {}", e))?
+                                        .get(&url)
+                                        .header("Icy-MetaData", "0")
+                                        .header("Connection", "keep-alive")
+                                        .send()
+                                        .map_err(|e| format!("Request: {}", e))?;
+
+                                    if !response.status().is_success() {
+                                        return Err(format!("HTTP {}", response.status()));
+                                    }
+
+                                    let reader = StreamingReader::new(response);
+                                    let source = Decoder::new(reader).map_err(|e| format!("Decoder: {}", e))?;
+                                    let sink = Sink::try_new(&handle).map_err(|e| format!("Sink: {}", e))?;
+                                    sink.set_volume(volume);
+                                    sink.append(source);
+                                    sink.play();
+                                    Ok(sink)
+                                })();
+
+                                match res {
+                                    Ok(sink) => {
+                                        let _ = tx_clone.send(AudioCmd::RegisterRadioSink(sink, request_id));
+                                    }
+                                    Err(e) => {
+                                        log::error!("Stream error: {}", e);
+                                        *last_error_shared.lock().unwrap() = Some(e);
+                                        has_error_shared.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        });
+                    }
+                    Ok(AudioCmd::RegisterRadioSink(sink, request_id)) => {
+                        if request_id == backend.active_radio_request_id {
+                            backend.radio_sink = Some(sink);
+                            backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
                         } else {
-                            *backend.last_error_shared.lock().unwrap() = None;
+                            // Discard sink from an old request that finished loading late
+                            sink.stop();
                         }
-                        backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(AudioCmd::SetVolume(v)) => {
                         backend.volume = v;
                         if let Some(s) = &backend.sink {
+                            s.set_volume(v);
+                        }
+                        if let Some(s) = &backend.radio_sink {
                             s.set_volume(v);
                         }
                     }
@@ -161,10 +322,16 @@ impl AudioPlayer {
                         if let Some(s) = &backend.sink {
                             s.pause();
                         }
+                        if let Some(s) = &backend.radio_sink {
+                            s.pause();
+                        }
                     }
                     Ok(AudioCmd::Resume) => {
                         log::info!("Resuming playback");
                         if let Some(s) = &backend.sink {
+                            s.play();
+                        }
+                        if let Some(s) = &backend.radio_sink {
                             s.play();
                         }
                     }
@@ -181,7 +348,8 @@ impl AudioPlayer {
                 }
                 
                 backend.is_empty_shared.store(
-                    backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true),
+                    backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true) &&
+                    backend.radio_sink.as_ref().map(|s| s.empty()).unwrap_or(true),
                     std::sync::atomic::Ordering::Relaxed
                 );
             }
@@ -194,6 +362,7 @@ impl AudioPlayer {
         let _ = self.cmd_tx.send(AudioCmd::Init(None));
     }
 
+    #[allow(dead_code)]
     pub fn try_init_with_name(&self, name: &str) {
         let _ = self.cmd_tx.send(AudioCmd::Init(Some(name.to_string())));
     }
@@ -211,7 +380,13 @@ impl AudioPlayer {
     pub fn play_stream(&self, url: String) {
         self.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
         self.has_error.store(false, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.cmd_tx.send(AudioCmd::PlayStream(url));
+        
+        let request_id = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos() as u64;
+            
+        let _ = self.cmd_tx.send(AudioCmd::PlayStream(url, request_id));
     }
 
     pub fn set_volume(&self, volume: f32) {
@@ -248,7 +423,11 @@ impl AudioBackend {
         if let Some(sink) = &self.sink {
             sink.stop();
         }
+        if let Some(sink) = &self.radio_sink {
+            sink.stop();
+        }
         self.sink = None;
+        self.radio_sink = None;
     }
 
     fn stop_all(&mut self) {
@@ -265,33 +444,33 @@ impl AudioBackend {
         self.stop_all();
         let host = rodio::cpal::default_host();
 
-        for attempt in 0..3 {
-            // Strategy 1: Try default output
-            if let Ok((stream, handle)) = OutputStream::try_default() {
-                self.stream = Some(stream);
-                self.handle = Some(handle);
-                let name = host.default_output_device().and_then(|d| d.name().ok()).unwrap_or_else(|| "Default".into());
-                *self.device_name_shared.lock().unwrap() = Some(name);
-                return Ok(());
-            }
-
-            // Strategy 2: Iterate all devices
-            if let Ok(devices) = host.output_devices() {
-                for device in devices {
-                    if let Ok((stream, handle)) = OutputStream::try_from_device(&device) {
-                        self.stream = Some(stream);
-                        self.handle = Some(handle);
-                        let name = device.name().unwrap_or_else(|_| "Unknown".into());
-                        *self.device_name_shared.lock().unwrap() = Some(name);
-                        return Ok(());
-                    }
-                }
-            }
-            
-            std::thread::sleep(Duration::from_millis(100 * (attempt + 1)));
+        // Strategy 1: Always try rodio's default output first as it's the most reliable "default"
+        if let Ok((stream, handle)) = OutputStream::try_default() {
+            self.stream = Some(stream);
+            self.handle = Some(handle);
+            let name = host.default_output_device()
+                .and_then(|d| d.name().ok())
+                .unwrap_or_else(|| "System Default".into());
+            *self.device_name_shared.lock().unwrap() = Some(name);
+            log::info!("Audio initialized using system default output.");
+            return Ok(());
         }
 
-        Err("No audio device available".into())
+        // Strategy 2: Fallback to iterating devices if default fails
+        if let Ok(devices) = host.output_devices() {
+            for device in devices {
+                if let Ok((stream, handle)) = OutputStream::try_from_device(&device) {
+                    self.stream = Some(stream);
+                    self.handle = Some(handle);
+                    let name = device.name().unwrap_or_else(|_| "Unknown Device".into());
+                    *self.device_name_shared.lock().unwrap() = Some(name.clone());
+                    log::warn!("Default audio failed, falling back to: {}", name);
+                    return Ok(());
+                }
+            }
+        }
+
+        Err("CRITICAL: No audio output devices found on this system.".into())
     }
 
     fn try_init_with_name(&mut self, name: &str) -> Result<(), String> {
@@ -365,41 +544,6 @@ impl AudioBackend {
         }
         
         Err("Playback failed".into())
-    }
-
-    fn play_stream(&mut self, url: String) -> Result<(), String> {
-        self.stop_sink();
-        
-        for attempt in 0..3 {
-            if let Err(e) = self.try_init(false) {
-                if attempt == 2 { return Err(e); }
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-
-            if let Some(handle) = &self.handle {
-                let mut response = reqwest::blocking::get(&url).map_err(|e| e.to_string())?;
-                let mut buffer = Vec::new();
-                std::io::copy(&mut response, &mut buffer).map_err(|e| e.to_string())?;
-                let source = Decoder::new(std::io::Cursor::new(buffer)).map_err(|e| e.to_string())?;
-                
-                match Sink::try_new(handle) {
-                    Ok(sink) => {
-                        sink.set_volume(self.volume);
-                        sink.append(source);
-                        sink.play();
-                        self.sink = Some(sink);
-                        return Ok(());
-                    }
-                    Err(_) => {
-                        self.stop_all();
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                }
-            }
-        }
-        
-        Err("Stream playback failed".into())
     }
 }
 

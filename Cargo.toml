@@ -1,0 +1,28 @@
+[package]
+name = "chord"
+version = "1.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.36", features = ["rt-multi-thread", "macros", "sync", "io-util", "process"] }
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+anyhow = "1.0"
+thiserror = "1.0"
+lofty = "0.21"
+symphonia = { version = "0.5", features = ["all"] }
+chrono = { version = "0.4", features = ["serde"] }
+directories = "5.0"
+regex = "1.10"
+walkdir = "2.5"
+uuid = { version = "1.7", features = ["v4"] }
+log = "0.4"
+env_logger = "0.11"
+ratatui = "0.29"
+rodio = { version = "0.17", features = ["flac", "vorbis", "wav", "mp3", "symphonia-all"] }
+crossterm = { version = "0.27", features = ["events"] }
+ratatui-image = "3.0.0"
+image = "0.25"

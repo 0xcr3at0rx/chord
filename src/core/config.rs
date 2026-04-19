@@ -9,7 +9,6 @@ use std::path::{Path, PathBuf};
 pub struct LibraryConfig {
     pub music_dir: PathBuf,
     pub scan_at_startup: bool,
-    pub last_mode: crate::player::app::InputMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,7 +105,6 @@ impl Default for LibraryConfig {
         Self {
             music_dir,
             scan_at_startup: true,
-            last_mode: crate::player::app::InputMode::Offline,
         }
     }
 }

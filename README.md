@@ -28,7 +28,7 @@ Just run the `chord` command. The app will automatically scan your `music_dir` f
 | `Enter` | Play selection (in Library/Online) |
 | `Space` / `p` | Pause / Resume |
 | `v` | Cycle Visualizer Mode |
-| `Tab` | Context Select (Library/Online) |
+| `Tab` | Context Select (Library folders) |
 | `Ctrl + r` | Online Mode |
 | `Esc` | Return to Offline Mode |
 

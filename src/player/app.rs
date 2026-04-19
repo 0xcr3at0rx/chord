@@ -16,13 +16,6 @@ pub enum InputMode {
     Search,
     PlaylistSelect,
     Online,
-    CountrySelect,
-}
-
-#[derive(PartialEq, Clone, Copy)]
-pub enum RadioView {
-    All,
-    Country,
 }
 
 #[derive(Clone, Debug)]
@@ -61,8 +54,6 @@ pub struct App {
     pub list_state: ListState,
     /// Selection state for the playlist selection sidebar.
     pub playlist_list_state: ListState,
-    /// Selection state for the radio country list.
-    pub country_list_state: ListState,
     /// Current input mode (Normal, Search, Radio, etc.).
     pub input_mode: InputMode,
     /// Store the previous mode before entering a temporary mode.
@@ -75,12 +66,6 @@ pub struct App {
     pub filtered_stations: Vec<crate::core::models::RadioStation>,
     /// Selection state for the radio station list.
     pub radio_list_state: ListState,
-    /// Current view mode for radio (All or Country-wise).
-    pub radio_view: RadioView,
-    /// List of countries for country-wise view.
-    pub radio_countries: Vec<String>,
-    /// Current selected country index.
-    pub radio_country_idx: usize,
     /// Metadata of the track currently being played.
     pub current_track: Option<Arc<TrackMetadata>>,
     /// The track list context (playlist/filter) from which playback was started.
@@ -190,26 +175,22 @@ impl App {
         }
 
         let theme = settings.config.read().unwrap().theme.to_theme();
-        let initial_mode = InputMode::Online;
+        let initial_mode = InputMode::PlaylistSelect;
 
         let mut app = App {
             all_tracks: tracks.clone(),
-            filtered_tracks: tracks,
-            playlists,
+            filtered_tracks: tracks.clone(),
+            playlists: playlists.clone(),
             current_playlist: None,
             current_playlist_tracks: None,
             list_state,
             playlist_list_state,
-            country_list_state,
             input_mode: initial_mode,
             previous_mode: InputMode::Offline,
             search_query: String::new(),
             radio_stations: Vec::new(),
             filtered_stations: Vec::new(),
             radio_list_state: ListState::default(),
-            radio_view: RadioView::All,
-            radio_countries: Vec::new(),
-            radio_country_idx: 0,
             current_track: None,
             playback_track_list: Vec::new(),
             playing_idx: None,
@@ -251,6 +232,7 @@ impl App {
         };
 
         app.load_radio_stations();
+        
         Ok(app)
     }
 
@@ -277,8 +259,9 @@ impl App {
             self.current_playlist_tracks = Some(tracks.clone());
             self.filtered_tracks = tracks;
         } else {
+            // Strict mode: No playlist selected means no tracks shown
             self.current_playlist_tracks = None;
-            self.filtered_tracks = self.all_tracks.clone();
+            self.filtered_tracks = Vec::new();
         }
         self.filter_tracks();
     }
@@ -301,13 +284,14 @@ impl App {
             .map(|(id, name)| Playlist { id, name })
             .collect();
 
-        if self.current_playlist.is_none() {
-            self.filtered_tracks = tracks;
-        } else {
+        if self.current_playlist.is_none() && !self.playlists.is_empty() {
+            let p = self.playlists[0].clone();
+            self.select_playlist(Some(p)).await;
+        } else if let Some(p) = self.current_playlist.clone() {
             // Re-select current playlist to update its tracks
-            let p = self.current_playlist.clone();
-            self.select_playlist(p).await;
+            self.select_playlist(Some(p)).await;
         }
+
         self.filter_tracks();
         self.needs_redraw = true;
     }
@@ -341,36 +325,18 @@ impl App {
         }
 
         self.radio_stations = stations.clone();
-
-        let countries: std::collections::HashSet<String> =
-            stations.iter().map(|s| s.country.clone()).collect();
-        let mut countries_vec: Vec<String> = countries.into_iter().collect();
-        countries_vec.sort();
-        self.radio_countries = countries_vec;
-
         self.filter_radio();
     }
 
     pub fn filter_radio(&mut self) {
         let query = self.search_query.to_lowercase();
-        let mut filtered = match self.radio_view {
-            RadioView::All => self.radio_stations.clone(),
-            RadioView::Country => {
-                if let Some(country) = self.radio_countries.get(self.radio_country_idx) {
-                    self.radio_stations
-                        .iter()
-                        .filter(|s| &s.country == country)
-                        .cloned()
-                        .collect()
-                } else {
-                    self.radio_stations.clone()
-                }
-            }
-        };
+        let mut filtered = self.radio_stations.clone();
 
         if !query.is_empty() {
             filtered.retain(|s| {
-                s.name.to_lowercase().contains(&query) || s.country.to_lowercase().contains(&query)
+                s.name.to_lowercase().contains(&query) || 
+                s.country.to_lowercase().contains(&query) ||
+                s.tags.as_deref().unwrap_or("").to_lowercase().contains(&query)
             });
         }
 
@@ -447,11 +413,6 @@ impl App {
             config.audio.volume = self.volume;
             config.audio.mode = self.audio.mode.lock().unwrap().clone();
 
-            // Only persist 'real' modes, not temporary selection menus
-            if self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online {
-                config.library.last_mode = self.input_mode;
-            }
-
             (
                 config.audio.sample_rate,
                 config.audio.buffer_ms,
@@ -471,11 +432,6 @@ impl App {
             config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
             config.audio.volume = self.volume;
             config.audio.mode = self.audio.mode.lock().unwrap().clone();
-
-            // Only persist 'real' modes, not temporary selection menus
-            if self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online {
-                config.library.last_mode = self.input_mode;
-            }
         };
 
         let config_file = self.settings.config_dir.join("config.toml");
@@ -777,7 +733,7 @@ impl App {
         let source = if let Some(tracks) = &self.current_playlist_tracks {
             tracks
         } else {
-            &self.all_tracks
+            &Vec::new() // Strictly no tracks if no playlist is selected
         };
 
         if query.is_empty() {

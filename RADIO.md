@@ -37,7 +37,6 @@ tags = "Electronic, Techno"
 | Key | Action |
 | :--- | :--- |
 | `Ctrl` + `r` | Enter Online Mode / Toggle |
-| `Tab` | Open Country Selection list |
 | `j` / `k` | Navigate station list |
 | `Enter` | Start streaming selected station |
 | `Esc` | Return to Offline Mode |

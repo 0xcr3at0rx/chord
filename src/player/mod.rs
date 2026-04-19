@@ -1,6 +1,6 @@
 use crate::core::config::Settings;
 use crate::core::constants::*;
-use crate::player::app::{App, InputMode, RadioView};
+use crate::player::app::{App, InputMode};
 use crate::player::ui::ui;
 use crate::storage::index::LibraryIndex;
 use anyhow::Result;
@@ -185,7 +185,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                 KEY_CONFIRM => {
                                     if let Some(i) = app.radio_list_state.selected() { app.play_radio(i).await; }
                                 }
-                                KEY_PLAYLIST_MODE => app.input_mode = InputMode::CountrySelect,
                                 KEY_SEARCH_MODE => {
                                     app.previous_mode = app.input_mode;
                                     app.input_mode = InputMode::Search;
@@ -202,45 +201,15 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                 KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => app.next_playlist(),
                                 KEY_LIST_UP | KEY_LIST_UP_VIM => app.previous_playlist(),
                                 KEY_CONFIRM => {
-                                    let idx = app.playlist_list_state.selected().unwrap_or(0);
-                                    if idx == 0 {
-                                        app.select_playlist(None).await;
-                                    } else if let Some(p) = app.playlists.get(idx - 1) {
-                                        let p_clone = p.clone();
-                                        app.select_playlist(Some(p_clone)).await;
+                                    if let Some(idx) = app.playlist_list_state.selected() {
+                                        if let Some(p) = app.playlists.get(idx) {
+                                            let p_clone = p.clone();
+                                            app.select_playlist(Some(p_clone)).await;
+                                        }
                                     }
                                     app.input_mode = InputMode::Offline;
                                 }
                                 KEY_PLAYLIST_MODE => app.input_mode = InputMode::Offline,
-                                _ => {}
-                            }
-                        }
-
-                        InputMode::CountrySelect => {
-                            match key.code {
-                                KEY_QUIT => return Ok(()),
-                                KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => {
-                                    let len = app.radio_countries.len() + 1;
-                                    let i = (app.country_list_state.selected().unwrap_or(0) + 1) % len;
-                                    app.country_list_state.select(Some(i));
-                                }
-                                KEY_LIST_UP | KEY_LIST_UP_VIM => {
-                                    let len = app.radio_countries.len() + 1;
-                                    let i = (app.country_list_state.selected().unwrap_or(0) + len - 1) % len;
-                                    app.country_list_state.select(Some(i));
-                                }
-                                KEY_CONFIRM => {
-                                    let idx = app.country_list_state.selected().unwrap_or(0);
-                                    if idx == 0 {
-                                        app.radio_view = RadioView::All;
-                                    } else if app.radio_countries.get(idx - 1).is_some() {
-                                        app.radio_view = RadioView::Country;
-                                        app.radio_country_idx = idx - 1;
-                                    }
-                                    app.filter_radio();
-                                    app.input_mode = InputMode::Online;
-                                }
-                                KEY_PLAYLIST_MODE => app.input_mode = InputMode::Online,
                                 _ => {}
                             }
                         }

@@ -90,10 +90,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         };
 
         if effective_mode == InputMode::PlaylistSelect {
-            let mut items = vec![ListItem::new(Line::from(vec![
-                Span::styled("  ", Style::default()),
-                Span::styled("All ( Library )", Style::default()),
-            ]))];
+            let mut items = Vec::new();
 
             for p in &app.playlists {
                 items.push(ListItem::new(Line::from(vec![
@@ -110,7 +107,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .title(Line::from(vec![
                             Span::styled(" SELECT ", Style::default().bg(Color::Magenta).fg(app.theme.bg)),
                             Span::raw(" "),
-                            Span::styled("CONTEXT", Style::default().fg(app.theme.dim)),
+                            Span::styled("PLAYLIST", Style::default().fg(app.theme.dim)),
                         ])),
                 )
                 .highlight_style(
@@ -119,108 +116,71 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .fg(app.theme.cursor_fg),
                 );
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.playlist_list_state);
-        }
- else if effective_mode == InputMode::Online || effective_mode == InputMode::CountrySelect
-        {
-            if effective_mode == InputMode::CountrySelect {
-                let mut items = vec![ListItem::new(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled("All Radios", Style::default()),
-                ]))];
-
-                for country in &app.radio_countries {
-                    items.push(ListItem::new(Line::from(vec![
-                        Span::styled("  ", Style::default()),
-                        Span::styled(country, Style::default()),
-                    ])));
-                }
-
-                let sidebar = List::new(items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::RIGHT)
-                            .border_style(Style::default().fg(app.theme.status_bg))
-                            .title(Line::from(vec![Span::styled(
-                                " SELECT COUNTRY ",
-                                Style::default().bg(Color::Magenta).fg(app.theme.bg),
-                            )])),
-                    )
-                    .highlight_style(
-                        Style::default()
-                            .bg(app.theme.cursor_bg)
-                            .fg(app.theme.cursor_fg),
-                    );
-                f.render_stateful_widget(sidebar, content_layout[0], &mut app.country_list_state);
-            } else {
-                let mut items = Vec::new();
-                for station in &app.filtered_stations {
-                    let is_playing = app
-                        .current_track
-                        .as_ref()
-                        .map(|t| t.track_id == "radio" && t.title == station.name)
-                        .unwrap_or(false);
-
-                    let style = if is_playing {
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(app.theme.accent)
-                    };
-
-                    let indicator = if is_playing {
-                        if app.is_playing {
-                            " 󰐊 "
-                        } else {
-                            " 󰏤 "
-                        }
-                    } else {
-                        "   "
-                    };
-
-                    items.push(ListItem::new(vec![
-                        Line::from(vec![
-                            Span::styled(indicator, style),
-                            Span::styled(format!("{}", station.name), style),
-                        ]),
-                        Line::from(vec![Span::styled(
-                            format!("    {} ", station.country),
-                            Style::default().fg(app.theme.dim),
-                        )]),
-                        Line::from(""),
-                    ]));
-                }
-
-                let view_label = match app.radio_view {
-                    crate::player::app::RadioView::All => "ALL RADIOS".to_string(),
-                    crate::player::app::RadioView::Country => format!(
-                        "COUNTRY: {}",
-                        app.radio_countries
-                            .get(app.radio_country_idx)
-                            .cloned()
-                            .unwrap_or_default()
-                    ),
-                };
-
-                let title_style = if is_search {
-                    Style::default().bg(app.theme.accent).fg(app.theme.bg)
+        } else if effective_mode == InputMode::Online {
+            let mut items = Vec::new();
+            for station in &app.filtered_stations {
+                let is_playing = app.current_track.as_ref()
+                    .map(|t| t.track_id == "radio" && t.title == station.name)
+                    .unwrap_or(false);
+                
+                let style = if is_playing {
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD)
                 } else {
-                    Style::default().bg(Color::Blue).fg(app.theme.bg)
+                    Style::default().fg(app.theme.accent)
                 };
 
-                if items.is_empty() && is_search {
-                    let msg = format!("  No stations match '{}'", app.search_query);
-                    let sidebar = Paragraph::new(vec![
-                        Line::from(""),
-                        Line::from(Span::styled(
-                            "  NO RESULTS FOUND  ",
-                            Style::default()
-                                .fg(app.theme.critical)
-                                .add_modifier(Modifier::BOLD),
-                        )),
-                        Line::from(""),
-                        Line::from(Span::styled(msg, Style::default().fg(app.theme.dim))),
-                    ])
+                let indicator = if is_playing {
+                    if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                } else {
+                    "   "
+                };
+
+                items.push(ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(indicator, style),
+                        Span::styled(format!("{}", station.name), style),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("    {} ", station.country), Style::default().fg(app.theme.dim)),
+                    ]),
+                    Line::from(""),
+                ]));
+            }
+
+            let title_style = if is_search {
+                Style::default().bg(app.theme.accent).fg(app.theme.bg)
+            } else {
+                Style::default().bg(Color::Blue).fg(app.theme.bg)
+            };
+
+            if items.is_empty() && is_search {
+                let msg = format!("  No stations match '{}'", app.search_query);
+                let sidebar = Paragraph::new(vec![
+                    Line::from(""),
+                    Line::from(Span::styled(
+                        "  NO RESULTS FOUND  ",
+                        Style::default()
+                            .fg(app.theme.critical)
+                            .add_modifier(Modifier::BOLD),
+                    )),
+                    Line::from(""),
+                    Line::from(Span::styled(msg, Style::default().fg(app.theme.dim))),
+                ])
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(app.theme.status_bg))
+                        .title(Line::from(vec![
+                            Span::styled(" ONLINE ", title_style),
+                            Span::raw(" "),
+                            Span::styled("ALL STATIONS", Style::default().fg(app.theme.dim)),
+                        ])),
+                );
+                f.render_widget(sidebar, content_layout[0]);
+            } else {
+                let sidebar = List::new(items)
                     .block(
                         Block::default()
                             .borders(Borders::RIGHT)
@@ -228,41 +188,21 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                             .title(Line::from(vec![
                                 Span::styled(" ONLINE ", title_style),
                                 Span::raw(" "),
-                                Span::styled(view_label, Style::default().fg(app.theme.dim)),
+                                Span::styled("ALL STATIONS", Style::default().fg(app.theme.dim)),
                             ])),
+                    )
+                    .highlight_style(
+                        Style::default()
+                            .bg(app.theme.cursor_bg)
+                            .fg(app.theme.cursor_fg),
                     );
-                    f.render_widget(sidebar, content_layout[0]);
-                } else {
-                    let sidebar = List::new(items)
-                        .block(
-                            Block::default()
-                                .borders(Borders::RIGHT)
-                                .border_style(Style::default().fg(app.theme.status_bg))
-                                .title(Line::from(vec![
-                                    Span::styled(" ONLINE ", title_style),
-                                    Span::raw(" "),
-                                    Span::styled(view_label, Style::default().fg(app.theme.dim)),
-                                ])),
-                        )
-                        .highlight_style(
-                            Style::default()
-                                .bg(app.theme.cursor_bg)
-                                .fg(app.theme.cursor_fg),
-                        );
-                    f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
-                }
+                f.render_stateful_widget(sidebar, content_layout[0], &mut app.radio_list_state);
             }
         } else if app.filtered_tracks.is_empty() {
             let (title, msg) = if !app.search_query.is_empty() {
-                (
-                    "  NO RESULTS FOUND  ",
-                    format!("  No tracks match '{}'", app.search_query),
-                )
+                ("  NO RESULTS FOUND  ", format!("  No tracks match '{}'", app.search_query))
             } else {
-                (
-                    "  LIBRARY IS EMPTY  ",
-                    "  Add music files and press 'r' to scan.".to_string(),
-                )
+                ("  LIBRARY IS EMPTY  ", "  Add music files and press 'r' to scan.".to_string())
             };
 
             let empty_msg = vec![
@@ -322,11 +262,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     };
 
                     let indicator = if is_playing {
-                        if app.is_playing {
-                            " 󰐊 "
-                        } else {
-                            " 󰏤 "
-                        }
+                        if app.is_playing { " 󰐊 " } else { " 󰏤 " }
                     } else {
                         "   "
                     };
@@ -344,18 +280,21 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 })
                 .collect();
 
+            let sidebar_title = if let Some(p) = &app.current_playlist {
+                format!("PLAYLIST: {}", p.name.to_uppercase())
+            } else {
+                "LIBRARY".to_string()
+            };
+
             let sidebar = List::new(items)
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
                         .border_style(Style::default().fg(app.theme.status_bg))
                         .title(Line::from(vec![
-                            Span::styled(
-                                " OFFLINE ",
-                                Style::default().bg(app.theme.dim).fg(app.theme.bg),
-                            ),
+                            Span::styled(" OFFLINE ", Style::default().bg(app.theme.dim).fg(app.theme.bg)),
                             Span::raw(" "),
-                            Span::styled("LIBRARY", Style::default().fg(app.theme.dim)),
+                            Span::styled(sidebar_title, Style::default().fg(app.theme.dim)),
                         ])),
                 )
                 .highlight_style(
@@ -745,13 +684,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .bg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
         ),
-        InputMode::CountrySelect => (
-            " COUNTRY ",
-            Style::default()
-                .fg(app.theme.bg)
-                .bg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        ),
     };
 
     f.render_widget(
@@ -765,8 +697,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         format!(" / {} ", app.search_query)
     } else if app.input_mode == InputMode::Online {
         " STATIONS ".to_string()
-    } else if app.input_mode == InputMode::CountrySelect {
-        " SELECT COUNTRY ".to_string()
     } else if let Some(track) = &app.current_track {
         format!(" Playing: {} - {} ", track.artist, track.title)
     } else {

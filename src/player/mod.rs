@@ -85,7 +85,9 @@ async fn run_app<B: Backend>(
                     app.needs_redraw = true;
 
                     // Global keys (Playback, Volume, etc.)
-                    if key.code == KEY_QUIT {
+                    if key.code == KEY_CONFIG_MODE && key.modifiers.contains(crossterm::event::KeyModifiers::CONTROL) {
+                        app.input_mode = InputMode::Config;
+                    } else if key.code == KEY_QUIT {
                         return Ok(());
                     } else if key.code == KEY_TOGGLE_PLAYBACK_1 || key.code == KEY_TOGGLE_PLAYBACK_2 {
                         app.toggle_playback().await;
@@ -112,9 +114,8 @@ async fn run_app<B: Backend>(
                         app.save_config().await;
                     } else if key.code == KEY_REFRESH {
                         let index = app.index.clone();
-                        let music_dir = app.settings.config.library.music_dir.clone();
-                        let refresh_tx = app.refresh_tx.clone();
-                        tokio::spawn(async move {
+                        let music_dir = app.settings.config.read().unwrap().library.music_dir.clone();
+                        let refresh_tx = app.refresh_tx.clone();                        tokio::spawn(async move {
                             let _ = index.update_index(&music_dir).await;
                             let _ = refresh_tx.send(());
                         });
@@ -147,6 +148,28 @@ async fn run_app<B: Backend>(
                                     app.select_playlist(Some(p_clone)).await;
                                 }
                                 app.input_mode = InputMode::Normal;
+                            }
+                        }
+                        InputMode::Config => {
+                            if key.code == KEY_BACK {
+                                app.input_mode = InputMode::Normal;
+                            } else if key.code == KEY_LIST_DOWN_VIM || key.code == KEY_LIST_DOWN {
+                                let i = match app.config_list_state.selected() {
+                                    Some(i) => (i + 1) % app.config_fields.len(),
+                                    None => 0,
+                                };
+                                app.config_list_state.select(Some(i));
+                            } else if key.code == KEY_LIST_UP_VIM || key.code == KEY_LIST_UP {
+                                let i = match app.config_list_state.selected() {
+                                    Some(i) => (i + app.config_fields.len() - 1) % app.config_fields.len(),
+                                    None => 0,
+                                };
+                                app.config_list_state.select(Some(i));
+                            } else if key.code == KEY_CONFIRM {
+                                if let Some(i) = app.config_list_state.selected() {
+                                    let field = app.config_fields[i];
+                                    app.handle_config_toggle(field).await;
+                                }
                             }
                         }
                         InputMode::Normal => {

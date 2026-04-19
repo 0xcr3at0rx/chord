@@ -15,6 +15,17 @@ pub enum InputMode {
     Normal,
     Search,
     PlaylistSelect,
+    Config,
+}
+
+#[derive(PartialEq, Clone, Copy)]
+pub enum ConfigField {
+    MusicDir,
+    AudioDevice,
+    AudioMode,
+    ScanAtStartup,
+    ThemeBg,
+    ThemeAccent,
 }
 
 #[derive(Clone, Debug)]
@@ -53,6 +64,10 @@ pub struct App<'a> {
     pub list_state: ListState,
     /// Selection state for the playlist selection sidebar.
     pub playlist_list_state: ListState,
+    /// Selection state for the configuration menu.
+    pub config_list_state: ListState,
+    /// List of fields available in config mode.
+    pub config_fields: Vec<ConfigField>,
     /// Current input mode (Normal, Search, PlaylistSelect, etc.).
     pub input_mode: InputMode,
     /// Current search query string.
@@ -90,6 +105,7 @@ pub struct App<'a> {
     pub last_error: Option<String>,
     pub audio: AudioPlayer,
     pub settings: Arc<Settings>,
+    pub theme: crate::config::Theme,
     pub index: Arc<LibraryIndex>,
     pub metadata_rx: mpsc::UnboundedReceiver<TrackMetadataUpdate>,
     pub metadata_tx: mpsc::UnboundedSender<TrackMetadataUpdate>,
@@ -108,14 +124,17 @@ impl<'a> App<'a> {
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
 
-        if settings.config.library.scan_at_startup {
-            let index_clone = index.clone();
-            let music_dir = settings.config.library.music_dir.clone();
-            let refresh_tx_clone = refresh_tx.clone();
-            tokio::spawn(async move {
-                let _ = index_clone.update_index(&music_dir).await;
-                let _ = refresh_tx_clone.send(());
-            });
+        {
+            let config = settings.config.read().unwrap();
+            if config.library.scan_at_startup {
+                let index_clone = index.clone();
+                let music_dir = config.library.music_dir.clone();
+                let refresh_tx_clone = refresh_tx.clone();
+                tokio::spawn(async move {
+                    let _ = index_clone.update_index(&music_dir).await;
+                    let _ = refresh_tx_clone.send(());
+                });
+            }
         }
 
         let mut tracks = index.get_all_tracks().await;
@@ -133,15 +152,31 @@ impl<'a> App<'a> {
             playlist_list_state.select(Some(0));
         }
 
-        let audio = AudioPlayer::new();
-        audio.set_volume(settings.config.audio.volume);
-        audio.set_mode(&settings.config.audio.mode);
+        let config_fields = vec![
+            ConfigField::MusicDir,
+            ConfigField::AudioDevice,
+            ConfigField::AudioMode,
+            ConfigField::ScanAtStartup,
+            ConfigField::ThemeBg,
+            ConfigField::ThemeAccent,
+        ];
+        let mut config_list_state = ListState::default();
+        config_list_state.select(Some(0));
 
-        if let Some(preferred_name) = &settings.config.audio.device_name {
-            audio.try_init_with_name(preferred_name);
-        } else {
-            audio.try_init();
+        let audio = AudioPlayer::new();
+        {
+            let config = settings.config.read().unwrap();
+            audio.set_volume(config.audio.volume);
+            audio.set_mode(&config.audio.mode);
+
+            if let Some(preferred_name) = &config.audio.device_name {
+                audio.try_init_with_name(preferred_name);
+            } else {
+                audio.try_init();
+            }
         }
+
+        let theme = settings.config.read().unwrap().theme.to_theme();
 
         Ok(App {
             all_tracks: tracks.clone(),
@@ -151,6 +186,8 @@ impl<'a> App<'a> {
             current_playlist_tracks: None,
             list_state,
             playlist_list_state,
+            config_list_state,
+            config_fields,
             input_mode: InputMode::Normal,
             search_query: String::new(),
             current_track: None,
@@ -158,7 +195,7 @@ impl<'a> App<'a> {
             playing_idx: None,
             is_playing: false,
             is_starting: false,
-            volume: settings.config.audio.volume,
+            volume: settings.config.read().unwrap().audio.volume,
             progress: 0.0,
             current_track_duration: Duration::from_secs(0),
             current_pos: Duration::from_secs(0),
@@ -182,7 +219,8 @@ impl<'a> App<'a> {
             last_key_event: None,
             last_error: None,
             audio,
-            settings,
+            settings: settings.clone(),
+            theme,
             index: index.clone(),
             metadata_rx,
             metadata_tx,
@@ -197,7 +235,8 @@ impl<'a> App<'a> {
     pub async fn select_playlist(&mut self, playlist: Option<Playlist>) {
         self.current_playlist = playlist.clone();
         if let Some(p) = playlist {
-            let mut tracks = self.index.get_playlist_tracks(&p.id, &self.settings.config.library.music_dir).await;
+            let music_dir = self.settings.config.read().unwrap().library.music_dir.clone();
+            let mut tracks = self.index.get_playlist_tracks(&p.id, &music_dir).await;
             tracks.sort_by(|a, b| a.artist.cmp(&b.artist).then(a.album.as_deref().unwrap_or("").cmp(b.album.as_deref().unwrap_or(""))));
             self.current_playlist_tracks = Some(tracks.clone());
             self.filtered_tracks = tracks;
@@ -350,10 +389,6 @@ impl<'a> App<'a> {
         self.bitrate = 0;
         self.bit_depth = 0;
 
-        let cache_dir = self.settings.config_dir.join("cache");
-        let art_cache = cache_dir.join("art");
-        let _ = std::fs::create_dir_all(&art_cache);
-
         if let Some(path_str) = &track.file_path {
             let path = PathBuf::from(path_str);
             if path.exists() {
@@ -373,8 +408,6 @@ impl<'a> App<'a> {
                 let path_clone = path.clone();
                 let tx = self.metadata_tx.clone();
                 let idx_clone = idx;
-                let track_id = track.track_id.clone();
-                let art_cache_clone = art_cache.clone();
 
                 tokio::task::spawn_blocking(move || {
                     use lofty::file::AudioFile;
@@ -416,15 +449,6 @@ impl<'a> App<'a> {
 
                             if let Some(picture) = tag.pictures().first() {
                                 art = Some(picture.data().to_vec());
-                            }
-                        }
-
-                        if art.is_none() {
-                            let art_file = art_cache_clone.join(format!("{}.png", track_id));
-                            if art_file.exists() {
-                                if let Ok(bytes) = std::fs::read(&art_file) {
-                                    art = Some(bytes);
-                                }
                             }
                         }
 
@@ -489,17 +513,43 @@ impl<'a> App<'a> {
         self.lyrics.sort_by_key(|l| l.time);
     }
 
+    pub async fn handle_config_toggle(&mut self, field: ConfigField) {
+        match field {
+            ConfigField::AudioMode => {
+                let current = self.audio.mode.lock().unwrap().clone();
+                let next = if current == "PIPEWIRE" { "ALSA" } else { "PIPEWIRE" };
+                self.audio.set_mode(next);
+                self.save_config().await;
+            }
+            ConfigField::ScanAtStartup => {
+                {
+                    let mut config = self.settings.config.write().unwrap();
+                    config.library.scan_at_startup = !config.library.scan_at_startup;
+                }
+                self.save_config().await;
+            }
+            ConfigField::AudioDevice => {
+                self.audio.next_device();
+                self.save_config().await;
+            }
+            _ => {
+                // Other fields might need a text input or color picker, 
+                // which is more complex. For now, we'll just log or ignore.
+            }
+        }
+        self.needs_redraw = true;
+    }
+
     pub async fn save_config(&self) {
-        let mut config = self.settings.config.clone();
-        config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
-        config.audio.volume = self.volume;
-        config.audio.mode = self.audio.mode.lock().unwrap().clone();
+        {
+            let mut config = self.settings.config.write().unwrap();
+            config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
+            config.audio.volume = self.volume;
+            config.audio.mode = self.audio.mode.lock().unwrap().clone();
+        }
 
-        let mut settings = (*self.settings).clone();
-        settings.config = config;
-
-        let config_file = settings.config_dir.join("config.toml");
-        let _ = settings.save_config(&config_file);
+        let config_file = self.settings.config_dir.join("config.toml");
+        let _ = self.settings.save_config(&config_file);
     }
 
     pub async fn update(&mut self) {

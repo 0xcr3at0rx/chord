@@ -1,6 +1,5 @@
 use crate::player::app::{App, InputMode};
 use crate::player::ui::components::{format_duration, render_visualizer};
-use crate::player::ui::theme::THEME;
 use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Margin},
     style::{Color, Modifier, Style},
@@ -17,7 +16,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let size = f.area();
 
     // Background
-    f.render_widget(Block::default().style(Style::default().bg(THEME.bg)), size);
+    f.render_widget(Block::default().style(Style::default().bg(app.theme.bg)), size);
 
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
@@ -39,13 +38,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Span::styled(
             " CHORD ",
             Style::default()
-                .fg(THEME.accent)
+                .fg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" | "),
         Span::styled(
             format!(" {} ", playlist_name.to_uppercase()),
-            Style::default().fg(THEME.dim),
+            Style::default().fg(app.theme.dim),
         ),
     ];
 
@@ -60,12 +59,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let audio_span = Span::styled(
         format!(" [ AUDIO: {} ] ", device_name.to_uppercase()),
         Style::default()
-            .fg(THEME.accent_dim)
+            .fg(app.theme.accent_dim)
             .add_modifier(Modifier::BOLD),
     );
 
     let top_bar_para =
-        Paragraph::new(Line::from(top_bar_spans)).style(Style::default().bg(THEME.status_bg));
+        Paragraph::new(Line::from(top_bar_spans)).style(Style::default().bg(app.theme.status_bg));
     f.render_widget(top_bar_para, main_layout[0]);
 
     f.render_widget(
@@ -97,40 +96,72 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(THEME.status_bg)),
+                        .border_style(Style::default().fg(app.theme.status_bg)),
                 )
-                .highlight_style(Style::default().bg(THEME.cursor_bg).fg(THEME.cursor_fg));
+                .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.playlist_list_state);
+        } else if app.input_mode == InputMode::Config {
+            let mut items = Vec::new();
+            let config = app.settings.config.read().unwrap();
+            for field in &app.config_fields {
+                let (label, value) = match field {
+                    crate::player::app::ConfigField::MusicDir => ("Music Dir", format!("{}", config.library.music_dir.display())),
+                    crate::player::app::ConfigField::AudioDevice => ("Audio Device", app.audio.device_name.lock().unwrap().clone().unwrap_or("Default".to_string())),
+                    crate::player::app::ConfigField::AudioMode => ("Audio Mode", app.audio.mode.lock().unwrap().clone()),
+                    crate::player::app::ConfigField::ScanAtStartup => ("Scan at Startup", format!("{}", config.library.scan_at_startup)),
+                    crate::player::app::ConfigField::ThemeBg => ("Theme BG", config.theme.bg.clone()),
+                    crate::player::app::ConfigField::ThemeAccent => ("Theme Accent", config.theme.accent.clone()),
+                };
+                
+                items.push(ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(format!("  {} ", label), Style::default().fg(app.theme.dim)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("    {} ", value), Style::default().fg(app.theme.accent_dim)),
+                    ]),
+                    Line::from(""),
+                ]));
+            }
+
+            let sidebar = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(app.theme.status_bg)),
+                )
+                .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
+            f.render_stateful_widget(sidebar, content_layout[0], &mut app.config_list_state);
         } else if app.filtered_tracks.is_empty() {
             let empty_msg = vec![
                 Line::from(""),
-                Line::from(Span::styled("  LIBRARY IS EMPTY  ", Style::default().fg(THEME.critical).add_modifier(Modifier::BOLD))),
+                Line::from(Span::styled("  LIBRARY IS EMPTY  ", Style::default().fg(app.theme.critical).add_modifier(Modifier::BOLD))),
                 Line::from(""),
                 Line::from(vec![
-                    Span::styled("  Music Directory: ", Style::default().fg(THEME.dim)),
-                    Span::styled(format!("{}", app.settings.config.library.music_dir.display()), Style::default().fg(THEME.accent_dim)),
+                    Span::styled("  Music Directory: ", Style::default().fg(app.theme.dim)),
+                    Span::styled(format!("{}", app.settings.config.read().unwrap().library.music_dir.display()), Style::default().fg(app.theme.accent_dim)),
                 ]),
                 Line::from(""),
                 Line::from(vec![
                     Span::raw("  [ "),
-                    Span::styled("r", Style::default().fg(THEME.accent)),
+                    Span::styled("r", Style::default().fg(app.theme.accent)),
                     Span::raw(" ] Scan for music"),
                 ]),
                 Line::from(vec![
                     Span::raw("  [ "),
-                    Span::styled("/", Style::default().fg(THEME.accent)),
+                    Span::styled("/", Style::default().fg(app.theme.accent)),
                     Span::raw(" ] Filter (once music is found)"),
                 ]),
                 Line::from(""),
-                Line::from(Span::styled("  Add music files (FLAC, MP3, etc.) to the", Style::default().fg(THEME.dim))),
-                Line::from(Span::styled("  folder above and press 'r' to refresh.", Style::default().fg(THEME.dim))),
+                Line::from(Span::styled("  Add music files (FLAC, MP3, etc.) to the", Style::default().fg(app.theme.dim))),
+                Line::from(Span::styled("  folder above and press 'r' to refresh.", Style::default().fg(app.theme.dim))),
             ];
             
             let sidebar = Paragraph::new(empty_msg)
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(THEME.status_bg)),
+                        .border_style(Style::default().fg(app.theme.status_bg)),
                 );
             f.render_widget(sidebar, content_layout[0]);
         } else {
@@ -142,10 +173,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     let is_playing = app.playing_idx == Some(i);
                     let style = if is_playing {
                         Style::default()
-                            .fg(THEME.accent)
+                            .fg(app.theme.accent)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(THEME.fg)
+                        Style::default().fg(app.theme.fg)
                     };
 
                     ListItem::new(vec![
@@ -155,7 +186,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         ]),
                         Line::from(vec![
                             Span::raw("    "),
-                            Span::styled(&t.artist, Style::default().fg(THEME.dim)),
+                            Span::styled(&t.artist, Style::default().fg(app.theme.dim)),
                         ]),
                     ])
                 })
@@ -165,9 +196,9 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(THEME.status_bg)),
+                        .border_style(Style::default().fg(app.theme.status_bg)),
                 )
-                .highlight_style(Style::default().bg(THEME.cursor_bg).fg(THEME.cursor_fg));
+                .highlight_style(Style::default().bg(app.theme.cursor_bg).fg(app.theme.cursor_fg));
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.list_state);
         }
 
@@ -180,8 +211,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let err_block = Paragraph::new(format!(" ERROR: {} ", error))
                 .style(
                     Style::default()
-                        .fg(THEME.bg)
-                        .bg(THEME.critical)
+                        .fg(app.theme.bg)
+                        .bg(app.theme.critical)
                         .add_modifier(Modifier::BOLD),
                 )
                 .alignment(Alignment::Center)
@@ -192,7 +223,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             // Dashboard
             let dashboard_block = Block::default()
                 .borders(Borders::BOTTOM)
-                .border_style(Style::default().fg(THEME.status_bg))
+                .border_style(Style::default().fg(app.theme.status_bg))
                 .padding(Padding::new(2, 2, 1, 1));
 
             let dashboard_area = dashboard_block.inner(main_area_layout[0]);
@@ -223,7 +254,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             } else {
                 let placeholder = Block::default()
                     .borders(Borders::ALL)
-                    .border_style(Style::default().fg(THEME.status_bg));
+                    .border_style(Style::default().fg(app.theme.status_bg));
                 f.render_widget(placeholder, dash_layout[0]);
             }
 
@@ -243,7 +274,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 Paragraph::new(Line::from(vec![Span::styled(
                     &track.title,
                     Style::default()
-                        .fg(THEME.accent)
+                        .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD),
                 )]))
                 .alignment(Alignment::Left),
@@ -253,8 +284,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             // --- ROW 2: Artist ---
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("Artist: ", Style::default().fg(THEME.dim)),
-                    Span::styled(&track.artist, Style::default().fg(THEME.fg)),
+                    Span::styled("Artist: ", Style::default().fg(app.theme.dim)),
+                    Span::styled(&track.artist, Style::default().fg(app.theme.fg)),
                 ]))
                 .alignment(Alignment::Left),
                 dash_chunks[1].inner(Margin::new(2, 0)),
@@ -263,10 +294,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             // --- ROW 3: Album ---
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("Album:  ", Style::default().fg(THEME.dim)),
+                    Span::styled("Album:  ", Style::default().fg(app.theme.dim)),
                     Span::styled(
                         track.album.as_deref().unwrap_or("Unknown"),
-                        Style::default().fg(THEME.fg).add_modifier(Modifier::ITALIC),
+                        Style::default().fg(app.theme.fg).add_modifier(Modifier::ITALIC),
                     ),
                 ]))
                 .alignment(Alignment::Left),
@@ -304,42 +335,42 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         total_count
                     ),
                     Style::default()
-                        .fg(THEME.bg)
-                        .bg(THEME.accent_dim)
+                        .fg(app.theme.bg)
+                        .bg(app.theme.accent_dim)
                         .add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
             ];
 
             if app.sample_rate > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(THEME.status_bg)));
+                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}Hz", app.sample_rate),
-                    Style::default().fg(THEME.dim),
+                    Style::default().fg(app.theme.dim),
                 ));
             }
 
             if app.bit_depth > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(THEME.status_bg)));
+                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}bit", app.bit_depth),
-                    Style::default().fg(THEME.dim),
+                    Style::default().fg(app.theme.dim),
                 ));
             }
 
             if app.bitrate > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(THEME.status_bg)));
+                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}kbps", app.bitrate),
-                    Style::default().fg(THEME.dim),
+                    Style::default().fg(app.theme.dim),
                 ));
             }
 
             if app.channels > 0 {
-                tech_spans.push(Span::styled(" • ", Style::default().fg(THEME.status_bg)));
+                tech_spans.push(Span::styled(" • ", Style::default().fg(app.theme.status_bg)));
                 tech_spans.push(Span::styled(
                     format!("{}ch", app.channels),
-                    Style::default().fg(THEME.dim),
+                    Style::default().fg(app.theme.dim),
                 ));
             }
 
@@ -359,7 +390,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 lyrics_lines.push(Line::from(vec![Span::styled(
                     "*  INSTRUMENTAL  *",
                     Style::default()
-                        .fg(THEME.dim)
+                        .fg(app.theme.dim)
                         .add_modifier(Modifier::ITALIC),
                 )]));
             } else {
@@ -372,7 +403,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
                     let style = match distance {
                         0 => Style::default()
-                            .fg(THEME.accent)
+                            .fg(app.theme.accent)
                             .add_modifier(Modifier::BOLD),
                         1 => Style::default().fg(Color::Rgb(160, 160, 160)),
                         2 => Style::default().fg(Color::Rgb(100, 100, 100)),
@@ -420,22 +451,29 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         InputMode::Normal => (
             " NORMAL ",
             Style::default()
-                .fg(THEME.bg)
-                .bg(THEME.dim)
+                .fg(app.theme.bg)
+                .bg(app.theme.dim)
                 .add_modifier(Modifier::BOLD),
         ),
         InputMode::Search => (
             " SEARCH ",
             Style::default()
-                .fg(THEME.bg)
-                .bg(THEME.accent)
+                .fg(app.theme.bg)
+                .bg(app.theme.accent)
                 .add_modifier(Modifier::BOLD),
         ),
         InputMode::PlaylistSelect => (
             " PLAYLIST ",
             Style::default()
-                .fg(THEME.bg)
+                .fg(app.theme.bg)
                 .bg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ),
+        InputMode::Config => (
+            " CONFIG ",
+            Style::default()
+                .fg(app.theme.bg)
+                .bg(app.theme.accent_dim)
                 .add_modifier(Modifier::BOLD),
         ),
     };
@@ -449,19 +487,21 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let mid_text = if app.input_mode == InputMode::Search {
         format!(" / {} ", app.search_query)
+    } else if app.input_mode == InputMode::Config {
+        " CONFIG - SETTINGS ".to_string()
     } else if let Some(track) = &app.current_track {
         format!(" Playing: {} - {} ", track.artist, track.title)
     } else {
         " CHORD - LIBRARY ".to_string()
     };
     f.render_widget(
-        Paragraph::new(mid_text).style(Style::default().fg(THEME.fg).bg(THEME.status_bg)),
+        Paragraph::new(mid_text).style(Style::default().fg(app.theme.fg).bg(app.theme.status_bg)),
         status_chunks[1],
     );
 
     // Progress Mini-Gauge
     let progress_bar = Gauge::default()
-        .gauge_style(Style::default().fg(THEME.accent).bg(THEME.status_bg))
+        .gauge_style(Style::default().fg(app.theme.accent).bg(app.theme.status_bg))
         .use_unicode(true)
         .ratio(app.progress as f64)
         .label("");
@@ -475,14 +515,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     f.render_widget(
         Paragraph::new(duration_str)
             .alignment(Alignment::Right)
-            .style(Style::default().fg(THEME.dim).bg(THEME.status_bg)),
+            .style(Style::default().fg(app.theme.dim).bg(app.theme.status_bg)),
         status_chunks[3],
     );
 
     f.render_widget(
         Paragraph::new(format!(" VOL {}% ", (app.volume * 100.0) as u32))
             .alignment(Alignment::Right)
-            .style(Style::default().fg(THEME.accent_dim).bg(THEME.status_bg)),
+            .style(Style::default().fg(app.theme.accent_dim).bg(app.theme.status_bg)),
         status_chunks[4],
     );
 }

@@ -27,7 +27,7 @@ pub struct LibraryIndex {
 
 impl LibraryIndex {
     pub fn new(config_dir: &Path) -> Self {
-        let cache_path = config_dir.join("library_cache.json");
+        let cache_path = config_dir.join("library_cache.toml");
         Self {
             cache_path,
             tracks: Arc::new(RwLock::new(BTreeMap::new())),
@@ -71,7 +71,7 @@ impl LibraryIndex {
             let mut cache: LibraryCache = if cache_path.exists() {
                 std::fs::read_to_string(&cache_path)
                     .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
+                    .and_then(|s| toml::from_str(&s).ok())
                     .unwrap_or_default()
             } else {
                 LibraryCache::default()
@@ -171,8 +171,8 @@ impl LibraryIndex {
 
             // Save cache
             cache.last_scan = Some(Utc::now());
-            if let Ok(json) = serde_json::to_string_pretty(&cache) {
-                let _ = std::fs::write(&cache_path, json);
+            if let Ok(toml_str) = toml::to_string_pretty(&cache) {
+                let _ = std::fs::write(&cache_path, toml_str);
             }
 
             (cache.tracks, found_playlists)

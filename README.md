@@ -17,8 +17,7 @@
 
 ## How it works
 
-1.  **Indexing**: The `index` command scans folders, gets metadata, and updates the local cache.
-2.  **Playback**: The `play` command opens the TUI player to browse and play your local files.
+Just run the `chord` command. The app will automatically scan your `music_dir` for files, update its local cache (`library_cache.toml`), and open the TUI player for you to browse and play your music.
 
 ## Installation
 
@@ -48,13 +47,13 @@ filename_format = "{artist}/{year} - {album}/{track}. {title}"
 [audio]
 device_name = "ALSA: Default"
 volume = 1.0
+
+[theme]
+bg = "#121212"
+fg = "#CCCCCC"
+accent = "#1BFD9C"
+accent_dim = "#66B2B2"
 ```
-
-## Commands
-
-- `chord play`: Open the TUI player.
-- `chord index`: Update local index.
-- `chord dedup`: Scan for and handle duplicate tracks.
 
 ## License
 

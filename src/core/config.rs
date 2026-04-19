@@ -30,12 +30,71 @@ pub struct AudioConfig {
     pub mode: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeConfig {
+    pub bg: String,
+    pub fg: String,
+    pub cursor_bg: String,
+    pub cursor_fg: String,
+    pub accent: String,
+    pub accent_dim: String,
+    pub critical: String,
+    pub dim: String,
+    pub status_bg: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub library: LibraryConfig,
     pub format: FormatConfig,
     pub audio: AudioConfig,
+    pub theme: ThemeConfig,
+}
+
+impl Default for ThemeConfig {
+    fn default() -> Self {
+        Self {
+            bg: "#121212".to_string(),
+            fg: "#CCCCCC".to_string(),
+            cursor_bg: "#2A2A2A".to_string(),
+            cursor_fg: "#DDDDDD".to_string(),
+            accent: "#1BFD9C".to_string(),
+            accent_dim: "#66B2B2".to_string(),
+            critical: "#BA0959".to_string(),
+            dim: "#7A7A7A".to_string(),
+            status_bg: "#2A2A2A".to_string(),
+        }
+    }
+}
+
+impl ThemeConfig {
+    fn parse_hex(hex: &str) -> ratatui::style::Color {
+        let hex = hex.trim_start_matches('#');
+        if hex.len() == 6 {
+            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+            ratatui::style::Color::Rgb(r, g, b)
+        } else {
+            ratatui::style::Color::Reset
+        }
+    }
+
+    pub fn to_theme(&self) -> crate::config::Theme {
+        crate::config::Theme {
+            bg: Self::parse_hex(&self.bg),
+            fg: Self::parse_hex(&self.fg),
+            cursor_bg: Self::parse_hex(&self.cursor_bg),
+            cursor_fg: Self::parse_hex(&self.cursor_fg),
+            accent: Self::parse_hex(&self.accent),
+            accent_dim: Self::parse_hex(&self.accent_dim),
+            critical: Self::parse_hex(&self.critical),
+            dim: Self::parse_hex(&self.dim),
+            status_bg: Self::parse_hex(&self.status_bg),
+        }
+    }
 }
 
 impl Default for LibraryConfig {
@@ -80,9 +139,11 @@ impl Default for AudioConfig {
     }
 }
 
-#[derive(Clone)]
+use std::sync::RwLock;
+
+#[derive(Debug)]
 pub struct Settings {
-    pub config: Config,
+    pub config: RwLock<Config>,
     pub config_dir: PathBuf,
 }
 
@@ -99,8 +160,8 @@ impl Settings {
 
         let config_file = config_dir.join("config.toml");
 
-        let mut settings = Self {
-            config: Config::default(),
+        let settings = Self {
+            config: RwLock::new(Config::default()),
             config_dir,
         };
 
@@ -109,11 +170,12 @@ impl Settings {
         Ok(settings)
     }
 
-    fn load_config(&mut self, path: &Path) -> Result<()> {
+    fn load_config(&self, path: &Path) -> Result<()> {
         if path.exists() {
             let content = fs::read_to_string(path)?;
             if let Ok(config) = toml::from_str::<Config>(&content) {
-                self.config = config;
+                let mut guard = self.config.write().unwrap();
+                *guard = config;
             }
         } else {
             let _ = self.save_config(path);
@@ -122,7 +184,8 @@ impl Settings {
     }
 
     pub fn save_config(&self, path: &Path) -> Result<()> {
-        fs::write(path, toml::to_string_pretty(&self.config)?)?;
+        let guard = self.config.read().unwrap();
+        fs::write(path, toml::to_string_pretty(&*guard)?)?;
         Ok(())
     }
 }

@@ -7,6 +7,7 @@ pub const DEFAULT_TICK_RATE_MS: u64 = 50;
 pub const KEY_DEBOUNCE_MS: u128 = 100;
 
 // --- THEME CONFIGURATION ---
+#[derive(Clone, Copy)]
 pub struct Theme {
     pub bg: Color,
     pub fg: Color,
@@ -51,6 +52,7 @@ pub const KEY_CYCLE_DEVICE: KeyCode = KeyCode::Char('d');
 pub const KEY_SEARCH_MODE: KeyCode = KeyCode::Char('/');
 pub const KEY_PLAYLIST_MODE: KeyCode = KeyCode::Tab;
 pub const KEY_REFRESH: KeyCode = KeyCode::Char('r');
+pub const KEY_CONFIG_MODE: KeyCode = KeyCode::Char('c'); // Used with Ctrl
 
 // List Navigation
 pub const KEY_LIST_UP: KeyCode = KeyCode::Up;

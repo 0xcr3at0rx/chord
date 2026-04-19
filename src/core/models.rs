@@ -23,6 +23,8 @@ pub struct TrackMetadata {
     pub sampling_rate: Option<u32>,
     pub downloaded_at: Option<DateTime<Utc>>,
     pub status: Option<String>,
+    #[serde(default)]
+    pub search_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

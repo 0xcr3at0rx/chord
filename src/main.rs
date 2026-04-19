@@ -1,4 +1,3 @@
-mod config;
 mod core;
 mod player;
 mod storage;
@@ -12,7 +11,7 @@ use storage::index::LibraryIndex;
 
 fn init_logging(settings: &Settings) {
     let is_debug = cfg!(debug_assertions) || std::env::var("CHORD_DEBUG").is_ok();
-    
+
     if !is_debug {
         let log_path = settings.config_dir.join("chord.log");
         let log_file = File::create(log_path).expect("Failed to create log file");

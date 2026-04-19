@@ -376,6 +376,7 @@ dependencies = [
  "log",
  "ratatui",
  "ratatui-image",
+ "rayon",
  "reqwest",
  "rodio",
  "serde",

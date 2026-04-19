@@ -1,7 +1,7 @@
 use crate::core::config::Settings;
 use crate::core::models::TrackMetadata;
-use crate::storage::index::LibraryIndex;
 use crate::player::audio::AudioPlayer;
+use crate::storage::index::LibraryIndex;
 use anyhow::Result;
 use ratatui::widgets::ListState;
 use serde::Deserialize;
@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
-#[derive(PartialEq, Clone, Copy)]
+#[derive(PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InputMode {
     Normal,
     Search,
@@ -32,6 +32,10 @@ pub enum ConfigField {
     AudioDevice,
     AudioMode,
     Visualizer,
+    SampleRate,
+    BufferMs,
+    ResampleQuality,
+    BitDepth,
     ScanAtStartup,
     ThemeBg,
     ThemeAccent,
@@ -93,6 +97,8 @@ pub struct App {
     pub radio_country_idx: usize,
     /// Current input mode (Normal, Search, PlaylistSelect, etc.).
     pub input_mode: InputMode,
+    /// Store the previous mode before entering a temporary mode.
+    pub previous_mode: InputMode,
     /// Current search query string.
     pub search_query: String,
     /// Metadata of the track currently being played.
@@ -128,47 +134,64 @@ pub struct App {
     pub last_error: Option<String>,
     pub audio: AudioPlayer,
     pub settings: Arc<Settings>,
-    pub theme: crate::config::Theme,
+    pub theme: crate::core::constants::Theme,
     pub index: Arc<LibraryIndex>,
     pub metadata_rx: mpsc::UnboundedReceiver<TrackMetadataUpdate>,
     pub metadata_tx: mpsc::UnboundedSender<TrackMetadataUpdate>,
     pub refresh_rx: mpsc::UnboundedReceiver<()>,
+    #[allow(dead_code)]
     pub refresh_tx: mpsc::UnboundedSender<()>,
     /// Flag to indicate that the UI needs to be redrawn in the next frame.
     pub needs_redraw: bool,
+    /// Timestamp of the last configuration change to prevent accidental skips.
+    pub last_config_change: Instant,
 }
 
 impl App {
-    pub async fn new(
-        settings: Arc<Settings>,
-        index: Arc<LibraryIndex>,
-    ) -> Result<App> {
+    pub async fn new(settings: Arc<Settings>, index: Arc<LibraryIndex>) -> Result<App> {
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+
+        // --- FIX: Always load existing cache from disk first ---
+        let music_dir = settings.config.read().unwrap().library.music_dir.clone();
+        let _ = index.load_cache(&music_dir).await;
 
         {
             let config = settings.config.read().unwrap();
             if config.library.scan_at_startup {
                 let index_clone = index.clone();
-                let music_dir = config.library.music_dir.clone();
+                let music_dir_clone = music_dir.clone();
                 let refresh_tx_clone = refresh_tx.clone();
                 tokio::spawn(async move {
-                    let _ = index_clone.update_index(&music_dir).await;
+                    let _ = index_clone.update_index(&music_dir_clone).await;
                     let _ = refresh_tx_clone.send(());
                 });
             }
         }
 
+        // Always load current state for UI
         let mut tracks = index.get_all_tracks().await;
-        tracks.sort_by(|a, b| a.artist.cmp(&b.artist).then(a.album.as_deref().unwrap_or("").cmp(b.album.as_deref().unwrap_or(""))));
+        tracks.sort_by(|a, b| {
+            a.artist.cmp(&b.artist).then(
+                a.album
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.album.as_deref().unwrap_or("")),
+            )
+        });
+
+        let p_rows = index.get_playlists().await;
+        let playlists = p_rows
+            .into_iter()
+            .map(|(id, name)| Playlist { id, name })
+            .collect::<Vec<_>>();
+        // ------------------------------------------------------------------
 
         let mut list_state = ListState::default();
         if !tracks.is_empty() {
             list_state.select(Some(0));
         }
 
-        let p_rows = index.get_playlists().await;
-        let playlists = p_rows.into_iter().map(|(id, name)| Playlist { id, name }).collect::<Vec<_>>();
         let mut playlist_list_state = ListState::default();
         if !playlists.is_empty() {
             playlist_list_state.select(Some(0));
@@ -179,6 +202,10 @@ impl App {
             ConfigField::AudioDevice,
             ConfigField::AudioMode,
             ConfigField::Visualizer,
+            ConfigField::SampleRate,
+            ConfigField::BufferMs,
+            ConfigField::ResampleQuality,
+            ConfigField::BitDepth,
             ConfigField::ScanAtStartup,
             ConfigField::ThemeBg,
             ConfigField::ThemeAccent,
@@ -194,12 +221,13 @@ impl App {
             let config = settings.config.read().unwrap();
             audio.set_volume(config.audio.volume);
             audio.set_mode(&config.audio.mode);
-            
+
             // Always start with the system default output for maximum reliability
             audio.try_init();
         }
 
         let theme = settings.config.read().unwrap().theme.to_theme();
+        let initial_mode = settings.config.read().unwrap().library.last_mode;
 
         Ok(App {
             all_tracks: tracks.clone(),
@@ -212,7 +240,8 @@ impl App {
             config_list_state,
             country_list_state,
             config_fields,
-            input_mode: InputMode::Normal,
+            input_mode: initial_mode,
+            previous_mode: InputMode::Normal,
             search_query: String::new(),
             current_track: None,
             playback_track_list: Vec::new(),
@@ -257,16 +286,30 @@ impl App {
             refresh_rx,
             refresh_tx,
             needs_redraw: true,
+            last_config_change: Instant::now() - Duration::from_secs(5),
         })
     }
-
 
     pub async fn select_playlist(&mut self, playlist: Option<Playlist>) {
         self.current_playlist = playlist.clone();
         if let Some(p) = playlist {
-            let music_dir = self.settings.config.read().unwrap().library.music_dir.clone();
+            let music_dir = self
+                .settings
+                .config
+                .read()
+                .unwrap()
+                .library
+                .music_dir
+                .clone();
             let mut tracks = self.index.get_playlist_tracks(&p.id, &music_dir).await;
-            tracks.sort_by(|a, b| a.artist.cmp(&b.artist).then(a.album.as_deref().unwrap_or("").cmp(b.album.as_deref().unwrap_or(""))));
+            tracks.sort_by(|a, b| {
+                a.artist.cmp(&b.artist).then(
+                    a.album
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(b.album.as_deref().unwrap_or("")),
+                )
+            });
             self.current_playlist_tracks = Some(tracks.clone());
             self.filtered_tracks = tracks;
         } else {
@@ -278,11 +321,21 @@ impl App {
 
     pub async fn refresh_library(&mut self) {
         let mut tracks = self.index.get_all_tracks().await;
-        tracks.sort_by(|a, b| a.artist.cmp(&b.artist).then(a.album.as_deref().unwrap_or("").cmp(b.album.as_deref().unwrap_or(""))));
+        tracks.sort_by(|a, b| {
+            a.artist.cmp(&b.artist).then(
+                a.album
+                    .as_deref()
+                    .unwrap_or("")
+                    .cmp(b.album.as_deref().unwrap_or("")),
+            )
+        });
         self.all_tracks = tracks.clone();
-        
+
         let p_rows = self.index.get_playlists().await;
-        self.playlists = p_rows.into_iter().map(|(id, name)| Playlist { id, name }).collect();
+        self.playlists = p_rows
+            .into_iter()
+            .map(|(id, name)| Playlist { id, name })
+            .collect();
 
         if self.current_playlist.is_none() {
             self.filtered_tracks = tracks;
@@ -313,51 +366,7 @@ impl App {
 
         // Add more diverse default public radios
         if stations.is_empty() {
-            let defaults = vec![
-                ("BBC Radio 1", "http://stream.live.vc.bbc.co.uk/bbc_radio_one_offline", "UK", "Pop, Top 40"),
-                ("BBC Radio 6 Music", "http://stream.live.vc.bbc.co.uk/bbc_6music_offline", "UK", "Alternative, Indie"),
-                ("SomaFM Groove Salad", "http://ice1.somafm.com/groovesalad-128-mp3", "USA", "Ambient, Chillout"),
-                ("SomaFM Drone Zone", "http://ice1.somafm.com/dronezone-128-mp3", "USA", "Ambient, Space"),
-                ("FIP", "https://stream.radiofrance.fr/fip/fip_hifi.m3u8?id=radiofrance", "France", "Eclectic"),
-                ("Radio Paradise (Main)", "http://stream.radioparadise.com/mp3-128", "USA", "Rock, Eclectic"),
-                ("KEXP", "https://kexp-mp3-128.streamguys1.com/kexp128.mp3", "USA", "Alternative, Indie"),
-                ("NTS Radio 1", "https://stream-relay-geo.ntslive.net/stream", "UK", "Experimental"),
-                ("Antenne Bayern", "http://stream.antenne.de/antenne", "Germany", "Pop"),
-                ("Jazz24", "https://live.jazz24.org/jazz24-mp3", "USA", "Jazz"),
-                ("Cinemix", "http://94.23.252.14:8067/live", "France", "Soundtrack"),
-                ("Swiss Groove", "https://icecast.argon.ch/swissgroove", "Switzerland", "Groove, Funk"),
-                ("Radio 105", "http://shoutcast.radio105.it:8000/105.mp3", "Italy", "Pop"),
-                ("Classic FM", "http://stream.live.vc.bbc.co.uk/bbc_radio_three_offline", "UK", "Classical"),
-                ("Acid House", "http://abm22.com.au:8000/CONTAINER1", "Australia", "Electronic, Acid"),
-                ("Afro House", "http://abm22.com.au:8000/CONTAINER53", "Australia", "Electronic, Afro"),
-                ("KissFM", "http://online.kissfm.ua/KissFM", "Ukraine", "Electronic, Trance"),
-                ("Paddygrooves", "https://a12.siar.us/radio/8230/radio.mp3", "Bali", "Downtempo, Lounge"),
-                ("Funky Ass Tunes", "https://ams1.reliastream.com/proxy/john12/stream", "Ireland", "Funk, Soul"),
-                ("Abaco Libros y Cafe", "https://radio30.virtualtronics.com/proxy/abaco", "Colombia", "Jazz, Bossa Nova"),
-                ("Blues Revue", "http://live.str3am.com:2240/live", "USA", "Blues"),
-                ("Jazz & Blues Radio", "https://jazzblues.ice.infomaniak.ch/jazzblues-high.mp3", "Switzerland", "Jazz, Blues"),
-                ("Jazz Eire", "https://visual.shoutca.st:8096/stream", "Ireland", "Jazz"),
-                ("Art Bell Radio", "http://stream.willstare.com:8450/", "USA", "Spoken Word, Paranormal"),
-                ("Roots FM", "http://138.201.198.218:8043/stream", "Germany", "Reggae, Dub"),
-                ("Double J", "http://live-radio01.mediahubaustralia.com/2jr/mp3/", "Australia", "Alternative"),
-                ("Svensk Folkmusik AkkA", "https://mediaserv38.live-streams.nl:8107/stream", "Sweden", "Folk"),
-                ("Ambient FM", "https://phoebe.streamerr.co:4140/ambient.mp3", "USA", "Ambient"),
-                ("Chillsky Chillhop", "https://chill.radioca.st/stream", "USA", "Lo-Fi, Hip Hop"),
-                ("Nature Radio", "https://nature-rex.radioca.st/stream", "Global", "Nature, Sounds"),
-                ("FreeCodeCamp Radio", "https://stream.freecodecamp.org/radio.mp3", "Global", "Lo-Fi, Focus"),
-                ("Robert Loglisci Radio", "https://radio.loglisci.com/listen/robertloglisciradio/radio.mp3", "Global", "Soundtrack"),
-                ("Cubic Space Radio", "http://music.cubicspace.fm:42424/mpeg", "Global", "Soul, Disco"),
-                ("Radio Regional Portugal", "http://193.70.40.92:8000/stream/2/", "Portugal", "News"),
-                ("Radio 100% Brasil", "http://193.70.40.92:8000/stream/11/", "Brazil", "Music"),
-                ("Da Hub Radio", "https://stream.dahubradio.co.uk:8848/stream", "UK", "Mixed"),
-                ("Voltaje Radio", "https://server5.mediasector.es:8070/voltaje", "Spain", "60s"),
-                ("La Diaria Radio", "https://radiolatina.live/8156/stream", "Global", "Misc"),
-                ("More Public Radio", "http://68.233.231.202:8107/stream", "Global", "Classic Jazz"),
-                ("Classic Hip Hop Radio", "http://73.191.71.239:8000/;", "Global", "Hip Hop"),
-                ("Rock Steady 94 Country", "http://streamingcenter.radiohosting.live:1830/stream", "Global", "Country"),
-            ];
-
-            for (name, url, country, tags) in defaults {
+            for &(name, url, country, tags) in crate::core::radio_stations::DEFAULT_RADIOS {
                 stations.push(crate::core::models::RadioStation {
                     name: name.into(),
                     url: url.into(),
@@ -368,12 +377,13 @@ impl App {
         }
 
         self.radio_stations = stations.clone();
-        
-        let countries: std::collections::HashSet<String> = stations.iter().map(|s| s.country.clone()).collect();
+
+        let countries: std::collections::HashSet<String> =
+            stations.iter().map(|s| s.country.clone()).collect();
         let mut countries_vec: Vec<String> = countries.into_iter().collect();
         countries_vec.sort();
         self.radio_countries = countries_vec;
-        
+
         self.filter_radio();
     }
 
@@ -383,7 +393,11 @@ impl App {
             RadioView::All => self.radio_stations.clone(),
             RadioView::Country => {
                 if let Some(country) = self.radio_countries.get(self.radio_country_idx) {
-                    self.radio_stations.iter().filter(|s| &s.country == country).cloned().collect()
+                    self.radio_stations
+                        .iter()
+                        .filter(|s| &s.country == country)
+                        .cloned()
+                        .collect()
                 } else {
                     self.radio_stations.clone()
                 }
@@ -391,7 +405,9 @@ impl App {
         };
 
         if !query.is_empty() {
-            filtered = filtered.into_iter().filter(|s| s.name.to_lowercase().contains(&query) || s.country.to_lowercase().contains(&query)).collect();
+            filtered.retain(|s| {
+                s.name.to_lowercase().contains(&query) || s.country.to_lowercase().contains(&query)
+            });
         }
 
         self.filtered_stations = filtered;
@@ -408,13 +424,13 @@ impl App {
             self.audio.play_stream(station.url.clone());
             self.is_playing = true;
             // For radio, we don't have local track info, duration etc.
-            self.current_track = None; 
+            self.current_track = None;
             self.accumulated_pos = Duration::from_secs(0);
             self.current_pos = Duration::from_secs(0);
             self.playback_start = Some(Instant::now());
             self.lyrics.clear();
             self.last_error = None;
-            
+
             // Dummy current track for UI display
             self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
                 track_id: "radio".into(),
@@ -437,6 +453,7 @@ impl App {
                 sampling_rate: None,
                 downloaded_at: None,
                 status: Some("radio".into()),
+                search_key: String::new(),
             }));
         }
     }
@@ -461,7 +478,7 @@ impl App {
 
     pub fn filter_tracks(&mut self) {
         let query = self.search_query.to_lowercase();
-        
+
         let source = if let Some(playlist_tracks) = &self.current_playlist_tracks {
             playlist_tracks
         } else {
@@ -473,13 +490,11 @@ impl App {
         } else {
             self.filtered_tracks = source
                 .iter()
-                .filter(|t| {
-                    t.title.to_lowercase().contains(&query) || t.artist.to_lowercase().contains(&query)
-                })
+                .filter(|t| t.search_key.contains(&query))
                 .cloned()
                 .collect();
         }
-        
+
         // No need to sort here; source is already sorted and filter preserves order.
         self.list_state.select(if self.filtered_tracks.is_empty() {
             None
@@ -595,7 +610,7 @@ impl App {
                 tokio::task::spawn_blocking(move || {
                     use lofty::file::AudioFile;
                     use lofty::prelude::*;
-                    
+
                     let duration = crate::player::audio::probe_duration(&path_clone);
 
                     if let Ok(probed) = lofty::read_from_path(&path_clone) {
@@ -615,7 +630,9 @@ impl App {
                                 }
                             }
                         }
-                        if br > 10000 { br /= 1000; }
+                        if br > 10000 {
+                            br /= 1000;
+                        }
 
                         let final_duration = duration.unwrap_or_else(|| props.duration());
                         let mut genre = None;
@@ -625,10 +642,16 @@ impl App {
 
                         if let Some(tag) = probed.primary_tag() {
                             genre = tag.genre().map(|s| s.to_string());
-                            label = tag.get_string(&lofty::tag::ItemKey::Label)
+                            label = tag
+                                .get_string(&lofty::tag::ItemKey::Label)
                                 .map(|s| s.to_string())
-                                .or_else(|| tag.get_string(&lofty::tag::ItemKey::Publisher).map(|s| s.to_string()));
-                            desc = tag.get_string(&lofty::tag::ItemKey::Comment).map(|s| s.to_string());
+                                .or_else(|| {
+                                    tag.get_string(&lofty::tag::ItemKey::Publisher)
+                                        .map(|s| s.to_string())
+                                });
+                            desc = tag
+                                .get_string(&lofty::tag::ItemKey::Comment)
+                                .map(|s| s.to_string());
 
                             if let Some(picture) = tag.pictures().first() {
                                 art = Some(picture.data().to_vec());
@@ -705,10 +728,15 @@ impl App {
     }
 
     pub async fn handle_config_toggle(&mut self, field: ConfigField) {
+        self.last_config_change = Instant::now();
         match field {
             ConfigField::AudioMode => {
                 let current = self.audio.mode.lock().unwrap().clone();
-                let next = if current == "PIPEWIRE" { "ALSA" } else { "PIPEWIRE" };
+                let next = if current == "PIPEWIRE" {
+                    "ALSA"
+                } else {
+                    "PIPEWIRE"
+                };
                 self.audio.set_mode(next);
                 self.save_config().await;
             }
@@ -719,6 +747,48 @@ impl App {
                 }
                 self.save_config().await;
             }
+            ConfigField::SampleRate => {
+                {
+                    let mut config = self.settings.config.write().unwrap();
+                    config.audio.sample_rate = match config.audio.sample_rate {
+                        44100 => 48000,
+                        48000 => 88200,
+                        88200 => 96000,
+                        96000 => 176400,
+                        176400 => 192000,
+                        _ => 44100,
+                    };
+                }
+                self.save_config().await;
+            }
+            ConfigField::BufferMs => {
+                {
+                    let mut config = self.settings.config.write().unwrap();
+                    config.audio.buffer_ms = match config.audio.buffer_ms {
+                        10 => 20,
+                        20 => 50,
+                        50 => 100,
+                        100 => 200,
+                        200 => 500,
+                        _ => 10,
+                    };
+                }
+                self.save_config().await;
+            }
+            ConfigField::ResampleQuality => {
+                {
+                    let mut config = self.settings.config.write().unwrap();
+                    config.audio.resample_quality = (config.audio.resample_quality % 4) + 1;
+                }
+                self.save_config().await;
+            }
+            ConfigField::BitDepth => {
+                {
+                    let mut config = self.settings.config.write().unwrap();
+                    config.audio.bit_depth = if config.audio.bit_depth == 16 { 32 } else { 16 };
+                }
+                self.save_config().await;
+            }
             ConfigField::ScanAtStartup => {
                 {
                     let mut config = self.settings.config.write().unwrap();
@@ -726,25 +796,30 @@ impl App {
                 }
                 self.save_config().await;
             }
-            ConfigField::AudioDevice => {
-                self.audio.next_device();
-                self.save_config().await;
-            }
-            _ => {
-                // Other fields might need a text input or color picker, 
-                // which is more complex. For now, we'll just log or ignore.
-            }
+            _ => {}
         }
         self.needs_redraw = true;
     }
-
     pub async fn save_config(&self) {
-        {
+        let (sr, bms, rq) = {
             let mut config = self.settings.config.write().unwrap();
             config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
             config.audio.volume = self.volume;
             config.audio.mode = self.audio.mode.lock().unwrap().clone();
-        }
+
+            // Only persist 'real' modes, not temporary selection menus
+            if self.input_mode == InputMode::Normal || self.input_mode == InputMode::Radio {
+                config.library.last_mode = self.input_mode;
+            }
+
+            (
+                config.audio.sample_rate,
+                config.audio.buffer_ms,
+                config.audio.resample_quality,
+            )
+        };
+
+        self.audio.update_audio_config(sr, bms, rq);
 
         let config_file = self.settings.config_dir.join("config.toml");
         let _ = self.settings.save_config(&config_file);
@@ -752,7 +827,7 @@ impl App {
 
     pub async fn update(&mut self) {
         // Drain refresh signals
-        while let Ok(_) = self.refresh_rx.try_recv() {
+        while self.refresh_rx.try_recv().is_ok() {
             self.refresh_library().await;
         }
 
@@ -776,7 +851,7 @@ impl App {
                         self.image_state = None;
                     }
                 }
-                
+
                 self.needs_redraw = true;
             }
         }
@@ -816,24 +891,35 @@ impl App {
                 }
             }
 
-            if self.progress >= 0.999 && !self.playback_track_list.is_empty() {
+            if self.progress >= 0.999
+                && !self.playback_track_list.is_empty()
+                && !is_init
+                && self.last_config_change.elapsed().as_millis() > 1000
+            {
                 let next = self
                     .playing_idx
                     .map(|i| (i + 1) % self.playback_track_list.len())
                     .unwrap_or(0);
                 self.play_track(next).await;
             }
-        } else if self.is_playing && is_empty && !is_init && !self.is_starting && !self.playback_track_list.is_empty() {
+        } else if self.is_playing
+            && is_empty
+            && !is_init
+            && !self.is_starting
+            && !self.playback_track_list.is_empty()
+            && self.last_config_change.elapsed().as_millis() > 1000
+        {
             // Auto-advance on end of track OR if the file failed to play (broken track)
+            // debounced by last_config_change to prevent skips during re-init
             let next = self
                 .playing_idx
                 .map(|i| (i + 1) % self.playback_track_list.len())
                 .unwrap_or(0);
-            
+
             if has_error {
                 let detail = self.audio.last_error.lock().unwrap().clone();
                 let error_msg = format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default());
-                
+
                 // Only update last_error if it's different to avoid redundant UI triggers
                 if self.last_error.as_ref() != Some(&error_msg) {
                     self.last_error = Some(error_msg);

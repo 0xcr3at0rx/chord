@@ -1,19 +1,18 @@
 # Chord
 
-**Chord** is a high-fidelity TUI music player for local audio files. It provides a clean, responsive interface for browsing and playing your music library.
+**Chord** is a high-fidelity TUI music player for local audio files and internet radio. It provides a clean, responsive interface for browsing and playing your music library with professional-grade audio options.
 
 <img align="right" width="300" src="images/screenshot1.png" alt="Chord TUI Screenshot 1">
 <img align="right" width="300" src="images/screenshot2.png" alt="Chord TUI Screenshot 2">
 
-## What it does
+## Key Features
 
-- **Local Playback**: A TUI music player for FLAC, MP3, WAV, and more.
-- **Indexing**: Scans local folders and maintains a database for track access.
-- **Album Art**: High-fidelity image preview in the TUI (requires a terminal with image support like Kitty, iTerm2, or WezTerm).
-- **Visualizer**: Real-time high-density visualizer with **10 different modes** (Wave, Bars, Matrix, Particles, etc.).
-- **Radio Mode**: Stream online radio stations (Ctrl+R). Cycle by country or search all stations.
-- **Dynamic Radio Art**: Procedural animated art for live streams.
-- **Custom Themes**: Full hex-code support for personalization via the configuration menu (Ctrl+C).
+- **Local Playback**: High-performance playback for FLAC, MP3, WAV, OGG, and more.
+- **Audiophile Grade**: Support for high-res output (up to 192kHz), adjustable buffers, and bit-depth control.
+- **Visualizer**: Real-time high-density visualizer with **25 different modes** (Matrix, Flame, Pulse, Sakura, etc.).
+- **Radio Mode**: Stream over 40+ curated online radio stations (Ctrl+R).
+- **Dynamic Radio Art**: Procedural animated art that reacts to live streams.
+- **Custom Themes**: Full hex-code support for total personalization.
 
 <br clear="right"/>
 
@@ -26,31 +25,40 @@ Just run the `chord` command. The app will automatically scan your `music_dir` f
 | Key | Action |
 | :--- | :--- |
 | `j` / `k` | Navigate lists |
-| `Enter` | Play selection |
+| `Enter` | Play selection (in Library/Radio) |
 | `Space` / `p` | Pause / Resume |
-| `Ctrl + c` | Configuration Menu |
+| `Tab` | Toggle Setting (in Config) / Context Select (Library/Radio) |
+| `Ctrl + c` | Configuration Menu (Settings) |
 | `Ctrl + r` | Radio Mode |
-| `Tab` | Selection Context (Playlists / Countries) |
-| `r` | Rescan / Refresh |
 | `Esc` | Return to Normal Mode |
 
 ## Configuration
 
-Settings are in `~/.config/chord/config.toml`.
+Settings are located in `~/.config/chord/config.toml`.
 
+### High-Fidelity Audio Setup
 ```toml
+[audio]
+visualizer = "Matrix"
+sample_rate = 96000     # Supports 44100 to 192000
+buffer_ms = 100         # Lower for latency, higher for stability
+resample_quality = 4    # 1 (Fastest) to 4 (Best quality)
+bit_depth = 32          # 16 or 32 (Float PCM)
+volume = 1.0
+
 [library]
 music_dir = "~/Music"
 scan_at_startup = true
-
-[audio]
-visualizer = "Matrix"
-volume = 1.0
 ```
 
+### Theme Customization
+```toml
 [theme]
 bg = "#121212"
-# ... hex colors
+fg = "#CCCCCC"
+accent = "#1BFD9C"
+accent_dim = "#66B2B2"
+critical = "#BA0959"
 ```
 
 ## License

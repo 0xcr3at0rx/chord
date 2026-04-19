@@ -1,11 +1,11 @@
-use ratatui::style::Color;
 use crossterm::event::KeyCode;
+use ratatui::style::Color;
 
 // --- APPLICATION CONSTANTS ---
 pub const DEFAULT_TICK_RATE_MS: u64 = 50;
 pub const KEY_DEBOUNCE_MS: u128 = 100;
 
-// --- THEME CONFIGURATION ---
+// --- THEME ---
 #[derive(Clone, Copy)]
 pub struct Theme {
     pub bg: Color,
@@ -20,7 +20,6 @@ pub struct Theme {
 }
 
 // --- KEYBINDINGS ---
-// Global Navigation & Playback
 pub const KEY_QUIT: KeyCode = KeyCode::Char('q');
 pub const KEY_TOGGLE_PLAYBACK_1: KeyCode = KeyCode::Char(' ');
 pub const KEY_TOGGLE_PLAYBACK_2: KeyCode = KeyCode::Char('p');
@@ -29,20 +28,15 @@ pub const KEY_NEXT_TRACK_2: KeyCode = KeyCode::Char('L');
 pub const KEY_PREV_TRACK_1: KeyCode = KeyCode::Char('h');
 pub const KEY_PREV_TRACK_2: KeyCode = KeyCode::Char('H');
 
-// Volume & Audio
 pub const KEY_VOL_UP_1: KeyCode = KeyCode::Char('+');
 pub const KEY_VOL_UP_2: KeyCode = KeyCode::Char('=');
 pub const KEY_VOL_DOWN: KeyCode = KeyCode::Char('-');
-pub const KEY_CYCLE_DEVICE: KeyCode = KeyCode::Char('d');
 
-// Modes
 pub const KEY_SEARCH_MODE: KeyCode = KeyCode::Char('/');
 pub const KEY_PLAYLIST_MODE: KeyCode = KeyCode::Tab;
-pub const KEY_REFRESH: KeyCode = KeyCode::Char('r');
-pub const KEY_CONFIG_MODE: KeyCode = KeyCode::Char('c');
-pub const KEY_RADIO_MODE: KeyCode = KeyCode::Char('r');
+pub const KEY_CONFIG_MODE: KeyCode = KeyCode::Char('c'); // Used with Ctrl
+pub const KEY_RADIO_MODE: KeyCode = KeyCode::Char('r'); // Used with Ctrl
 
-// List Navigation
 pub const KEY_LIST_UP: KeyCode = KeyCode::Up;
 pub const KEY_LIST_DOWN: KeyCode = KeyCode::Down;
 pub const KEY_LIST_UP_VIM: KeyCode = KeyCode::Char('k');

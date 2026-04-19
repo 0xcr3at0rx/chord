@@ -9,17 +9,7 @@ use std::path::{Path, PathBuf};
 pub struct LibraryConfig {
     pub music_dir: PathBuf,
     pub scan_at_startup: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct FormatConfig {
-    pub filename_format: String,
-    pub services: Vec<String>,
-    pub use_artist_subfolders: bool,
-    pub use_album_subfolders: bool,
-    pub use_playlist_folders: bool,
-    pub playlist_parent_dir: String,
+    pub last_mode: crate::player::app::InputMode,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -28,7 +18,11 @@ pub struct AudioConfig {
     pub device_name: Option<String>,
     pub volume: f32,
     pub mode: String,
-    pub visualizer: crate::player::ui::components::VisualizerMode,
+    pub visualizer: crate::core::visualizer::VisualizerMode,
+    pub sample_rate: u32,
+    pub buffer_ms: u32,
+    pub resample_quality: u32,
+    pub bit_depth: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +43,6 @@ pub struct ThemeConfig {
 #[serde(default)]
 pub struct Config {
     pub library: LibraryConfig,
-    pub format: FormatConfig,
     pub audio: AudioConfig,
     pub theme: ThemeConfig,
 }
@@ -83,8 +76,8 @@ impl ThemeConfig {
         }
     }
 
-    pub fn to_theme(&self) -> crate::config::Theme {
-        crate::config::Theme {
+    pub fn to_theme(&self) -> crate::core::constants::Theme {
+        crate::core::constants::Theme {
             bg: Self::parse_hex(&self.bg),
             fg: Self::parse_hex(&self.fg),
             cursor_bg: Self::parse_hex(&self.cursor_bg),
@@ -113,19 +106,7 @@ impl Default for LibraryConfig {
         Self {
             music_dir,
             scan_at_startup: true,
-        }
-    }
-}
-
-impl Default for FormatConfig {
-    fn default() -> Self {
-        Self {
-            filename_format: "{artist}/{year} - {album}/{track}. {title}".to_string(),
-            services: vec!["qobuz".into(), "amazon".into(), "tidal".into(), "spoti".into(), "youtube".into()],
-            use_artist_subfolders: true,
-            use_album_subfolders: true,
-            use_playlist_folders: true,
-            playlist_parent_dir: String::new(),
+            last_mode: crate::player::app::InputMode::Normal,
         }
     }
 }
@@ -136,7 +117,11 @@ impl Default for AudioConfig {
             device_name: None,
             volume: 1.0,
             mode: "PIPEWIRE".to_string(),
-            visualizer: crate::player::ui::components::VisualizerMode::Wave,
+            visualizer: crate::core::visualizer::VisualizerMode::Bars,
+            sample_rate: 48000,
+            buffer_ms: 100,
+            resample_quality: 4,
+            bit_depth: 32,
         }
     }
 }

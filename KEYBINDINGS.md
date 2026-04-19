@@ -5,16 +5,14 @@
 | `q` | Quit |
 | `j` / `Down` | Move selection down |
 | `k` / `Up` | Move selection up |
-| `l` | Play next track |
-| `h` | Play previous track |
-| `Enter` | Play selected track |
+| `l` | Next track (Normal mode) |
+| `h` | Previous track (Normal mode) |
+| `Enter` | Play selected track / station |
+| `Tab` | **Toggle Option (Config mode)** / Context selection (Library/Radio) |
 | `p` / `Space` | Pause / Resume |
-| `/` | Search |
-| `Tab` | Toggle Playlist Selection |
-| `r` | Refresh Library / Rescan |
+| `/` | Search / Filter |
 | `Ctrl` + `c` | Open Configuration Menu |
 | `Ctrl` + `r` | Enter Radio Mode |
 | `Esc` | Return to Normal Mode |
 | `+` / `=` | Increase Volume (max 100%) |
 | `-` | Decrease Volume |
-| `d` | Cycle Audio Output Device |

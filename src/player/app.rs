@@ -4,7 +4,6 @@ use crate::player::audio::AudioPlayer;
 use crate::storage::index::LibraryIndex;
 use anyhow::Result;
 use ratatui::widgets::ListState;
-use serde::Deserialize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -61,9 +60,9 @@ pub struct App {
     /// Current search query string.
     pub search_query: String,
     /// List of available radio stations.
-    pub radio_stations: Vec<crate::core::models::RadioStation>,
+    pub radio_stations: Vec<Arc<crate::core::models::RadioStation>>,
     /// Filtered list of radio stations.
-    pub filtered_stations: Vec<crate::core::models::RadioStation>,
+    pub filtered_stations: Vec<Arc<crate::core::models::RadioStation>>,
     /// Selection state for the radio station list.
     pub radio_list_state: ListState,
     /// Metadata of the track currently being played.
@@ -297,17 +296,73 @@ impl App {
     }
 
     pub fn load_radio_stations(&mut self) {
-        let radio_file = self.settings.config_dir.join("radio.toml");
+        use std::io::BufRead;
         let mut stations = Vec::new();
+        let paths = vec![
+            self.settings.config_dir.join("radio.toml"),
+            std::env::current_dir().unwrap_or_default().join("radio.toml"),
+        ];
 
-        if radio_file.exists() {
-            if let Ok(content) = std::fs::read_to_string(radio_file) {
-                #[derive(Deserialize)]
-                struct RadioConfig {
-                    stations: Vec<crate::core::models::RadioStation>,
-                }
-                if let Ok(config) = toml::from_str::<RadioConfig>(&content) {
-                    stations = config.stations;
+        for radio_file in paths {
+            if radio_file.exists() {
+                if let Ok(file) = std::fs::File::open(&radio_file) {
+                    let reader = std::io::BufReader::new(file);
+                    
+                    let mut current_name = String::new();
+                    let mut current_url = String::new();
+                    let mut current_country = String::new();
+                    let mut current_tags = String::new();
+
+                    let extract_val = |line: &str, prefix: &str| -> Option<String> {
+                        if let Some(stripped) = line.strip_prefix(prefix) {
+                            if let Some(end) = stripped.strip_suffix("\"") {
+                                return Some(end.replace("\\\"", "\"").replace("\\\\", "\\"));
+                            }
+                        }
+                        None
+                    };
+
+                    for line_result in reader.lines() {
+                        if let Ok(line) = line_result {
+                            let line = line.trim();
+                            if line == "[[stations]]" {
+                                if !current_name.is_empty() && !current_url.is_empty() {
+                                    stations.push(Arc::new(crate::core::models::RadioStation {
+                                        name: current_name.clone(),
+                                        url: current_url.clone(),
+                                        country: current_country.clone(),
+                                        tags: Some(current_tags.clone()),
+                                    }));
+                                }
+                                current_name.clear();
+                                current_url.clear();
+                                current_country.clear();
+                                current_tags.clear();
+                            } else if let Some(val) = extract_val(line, "name = \"") {
+                                current_name = val;
+                            } else if let Some(val) = extract_val(line, "url = \"") {
+                                current_url = val;
+                            } else if let Some(val) = extract_val(line, "country = \"") {
+                                current_country = val;
+                            } else if let Some(val) = extract_val(line, "tags = \"") {
+                                current_tags = val;
+                            }
+                        }
+                    }
+                    if !current_name.is_empty() && !current_url.is_empty() {
+                        stations.push(Arc::new(crate::core::models::RadioStation {
+                            name: current_name,
+                            url: current_url,
+                            country: current_country,
+                            tags: Some(current_tags),
+                        }));
+                    }
+                    
+                    if !stations.is_empty() {
+                        break;
+                    }
+                } else {
+                    self.last_error = Some(format!("Failed to read {}", radio_file.display()));
                 }
             }
         }
@@ -315,12 +370,12 @@ impl App {
         // Add more diverse default public radios
         if stations.is_empty() {
             for &(name, url, country, tags) in crate::core::radio_stations::DEFAULT_RADIOS {
-                stations.push(crate::core::models::RadioStation {
+                stations.push(Arc::new(crate::core::models::RadioStation {
                     name: name.into(),
                     url: url.into(),
                     country: country.into(),
                     tags: Some(tags.into()),
-                });
+                }));
             }
         }
 

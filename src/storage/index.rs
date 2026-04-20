@@ -132,6 +132,7 @@ impl LibraryIndex {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub async fn update_index(&self, music_dir: &Path) -> Result<()> {
         if !music_dir.exists() {
             return Ok(());

@@ -333,6 +333,7 @@ dependencies = [
  "rustfft",
  "serde",
  "symphonia",
+ "thiserror 2.0.18",
  "tokio",
  "toml",
  "uuid",

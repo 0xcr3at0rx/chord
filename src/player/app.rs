@@ -2,7 +2,7 @@ use crate::core::config::Settings;
 use crate::core::models::TrackMetadata;
 use crate::player::audio::AudioPlayer;
 use crate::storage::index::LibraryIndex;
-use anyhow::Result;
+use crate::core::error::{ChordError, ChordResult};
 use ratatui::widgets::ListState;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -37,39 +37,22 @@ pub struct TrackMetadataUpdate {
     pub duration: Duration,
 }
 
-/// Application state and business logic for the TUI player.
-pub struct App {
-    /// All tracks in the library, sorted by artist and album.
+pub struct App<'a> {
     pub all_tracks: Vec<Arc<TrackMetadata>>,
-    /// Tracks currently displayed in the sidebar (either all, from a playlist, or filtered by search).
     pub filtered_tracks: Vec<Arc<TrackMetadata>>,
-    /// List of available playlists from the database.
     pub playlists: Vec<Playlist>,
-    /// The currently active playlist, if any.
     pub current_playlist: Option<Playlist>,
-    /// Full tracklist of the current playlist, used as the source for search filtering.
     pub current_playlist_tracks: Option<Vec<Arc<TrackMetadata>>>,
-    /// Selection state for the main track list.
     pub list_state: ListState,
-    /// Selection state for the playlist selection sidebar.
     pub playlist_list_state: ListState,
-    /// Current input mode (Normal, Search, Radio, etc.).
     pub input_mode: InputMode,
-    /// Store the previous mode before entering a temporary mode.
     pub previous_mode: InputMode,
-    /// Current search query string.
     pub search_query: String,
-    /// List of available radio stations.
     pub radio_stations: Vec<Arc<crate::core::models::RadioStation>>,
-    /// Filtered list of radio stations.
     pub filtered_stations: Vec<Arc<crate::core::models::RadioStation>>,
-    /// Selection state for the radio station list.
     pub radio_list_state: ListState,
-    /// Metadata of the track currently being played.
     pub current_track: Option<Arc<TrackMetadata>>,
-    /// The track list context (playlist/filter) from which playback was started.
     pub playback_track_list: Vec<Arc<TrackMetadata>>,
-    /// Index of the track currently being played in 'filtered_tracks'.
     pub playing_idx: Option<usize>,
     pub is_playing: bool,
     pub is_starting: bool,
@@ -97,45 +80,25 @@ pub struct App {
     pub last_key_event: Option<(crossterm::event::KeyCode, std::time::Instant)>,
     pub last_error: Option<String>,
     pub audio: AudioPlayer,
-    pub settings: Arc<Settings>,
+    pub settings: &'a Settings,
     pub theme: crate::core::constants::Theme,
-    pub index: Arc<LibraryIndex>,
+    pub index: &'a LibraryIndex,
     pub metadata_rx: mpsc::UnboundedReceiver<TrackMetadataUpdate>,
     pub metadata_tx: mpsc::UnboundedSender<TrackMetadataUpdate>,
     pub refresh_rx: mpsc::UnboundedReceiver<()>,
-    #[allow(dead_code)]
-    pub refresh_tx: mpsc::UnboundedSender<()>,
-    /// Flag to indicate that the UI needs to be redrawn in the next frame.
     pub needs_redraw: bool,
-    /// A dynamic clock that advances based on audio energy for better visualizer sync.
     pub audio_clock: f64,
-    /// Flag to indicate if radio stations have been loaded yet
     pub radio_loaded: bool,
 }
 
-impl App {
-    pub async fn new(settings: Arc<Settings>, index: Arc<LibraryIndex>) -> Result<App> {
+impl<'a> App<'a> {
+    pub async fn new(settings: &'a Settings, index: &'a LibraryIndex) -> ChordResult<App<'a>> {
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (_refresh_tx, refresh_rx) = mpsc::unbounded_channel();
 
-        // --- FIX: Always load existing cache from disk first ---
-        let music_dir = settings.config.read().unwrap().library.music_dir.clone();
+        let music_dir = settings.config.read().map_err(|e| ChordError::Config(e.to_string()))?.library.music_dir.clone();
         let _ = index.load_cache(&music_dir).await;
 
-        {
-            let config = settings.config.read().unwrap();
-            if config.library.scan_at_startup {
-                let index_clone = index.clone();
-                let music_dir_clone = music_dir.clone();
-                let refresh_tx_clone = refresh_tx.clone();
-                tokio::spawn(async move {
-                    let _ = index_clone.update_index(&music_dir_clone).await;
-                    let _ = refresh_tx_clone.send(());
-                });
-            }
-        }
-
-        // Always load current state for UI
         let mut tracks = index.get_all_tracks().await;
         tracks.sort_by(|a, b| {
             a.artist.cmp(&b.artist).then(
@@ -162,31 +125,25 @@ impl App {
             playlist_list_state.select(Some(0));
         }
 
-        let mut country_list_state = ListState::default();
-        country_list_state.select(Some(0));
-
         let audio = AudioPlayer::new();
         {
-            let config = settings.config.read().unwrap();
+            let config = settings.config.read().map_err(|e| ChordError::Config(e.to_string()))?;
             audio.set_volume(config.audio.volume);
             audio.set_mode(&config.audio.mode);
-
-            // Always start with the system default output for maximum reliability
             audio.try_init();
         }
 
-        let theme = settings.config.read().unwrap().theme.to_theme();
-        let initial_mode = InputMode::PlaylistSelect;
+        let theme = settings.config.read().map_err(|e| ChordError::Config(e.to_string()))?.theme.to_theme();
 
         let app = App {
             all_tracks: tracks.clone(),
             filtered_tracks: tracks.clone(),
-            playlists: playlists.clone(),
+            playlists,
             current_playlist: None,
             current_playlist_tracks: None,
             list_state,
             playlist_list_state,
-            input_mode: initial_mode,
+            input_mode: InputMode::PlaylistSelect,
             previous_mode: InputMode::Offline,
             search_query: String::new(),
             radio_stations: Vec::new(),
@@ -197,7 +154,7 @@ impl App {
             playing_idx: None,
             is_playing: false,
             is_starting: false,
-            volume: settings.config.read().unwrap().audio.volume,
+            volume: settings.config.read().map_err(|e| ChordError::Config(e.to_string()))?.audio.volume,
             progress: 0.0,
             current_track_duration: Duration::from_secs(0),
             current_pos: Duration::from_secs(0),
@@ -221,13 +178,12 @@ impl App {
             last_key_event: None,
             last_error: None,
             audio,
-            settings: settings.clone(),
+            settings,
             theme,
-            index: index.clone(),
+            index,
             metadata_rx,
             metadata_tx,
             refresh_rx,
-            refresh_tx,
             needs_redraw: true,
             audio_clock: 0.0,
             radio_loaded: false,
@@ -239,14 +195,13 @@ impl App {
     pub async fn select_playlist(&mut self, playlist: Option<Playlist>) {
         self.current_playlist = playlist.clone();
         if let Some(p) = playlist {
-            let music_dir = self
-                .settings
-                .config
-                .read()
-                .unwrap()
-                .library
-                .music_dir
-                .clone();
+            let music_dir = match self.settings.config.read() {
+                Ok(c) => c.library.music_dir.clone(),
+                Err(e) => {
+                    self.last_error = Some(format!("Config Error: {}", e));
+                    return;
+                }
+            };
             let mut tracks = self.index.get_playlist_tracks(&p.id, &music_dir).await;
             tracks.sort_by(|a, b| {
                 a.artist.cmp(&b.artist).then(
@@ -259,7 +214,6 @@ impl App {
             self.current_playlist_tracks = Some(tracks.clone());
             self.filtered_tracks = tracks;
         } else {
-            // Strict mode: No playlist selected means no tracks shown
             self.current_playlist_tracks = None;
             self.filtered_tracks = Vec::new();
         }
@@ -288,7 +242,6 @@ impl App {
             let p = self.playlists[0].clone();
             self.select_playlist(Some(p)).await;
         } else if let Some(p) = self.current_playlist.clone() {
-            // Re-select current playlist to update its tracks
             self.select_playlist(Some(p)).await;
         }
 
@@ -362,13 +315,10 @@ impl App {
                     if !stations.is_empty() {
                         break;
                     }
-                } else {
-                    self.last_error = Some(format!("Failed to read {}", radio_file.display()));
                 }
             }
         }
 
-        // Add more diverse default public radios
         if stations.is_empty() {
             for &(name, url, country, tags) in crate::core::radio_stations::DEFAULT_RADIOS {
                 stations.push(Arc::new(crate::core::models::RadioStation {
@@ -410,7 +360,6 @@ impl App {
             self.is_starting = true;
             self.audio.play_stream(station.url.clone());
             self.is_playing = true;
-            // For radio, we don't have local track info, duration etc.
             self.current_track = None;
             self.accumulated_pos = Duration::from_secs(0);
             self.current_pos = Duration::from_secs(0);
@@ -418,7 +367,6 @@ impl App {
             self.lyrics.clear();
             self.last_error = None;
 
-            // Dummy current track for UI display
             self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
                 track_id: "radio".into(),
                 isrc: None,
@@ -446,7 +394,7 @@ impl App {
     }
 
     pub fn next_playlist(&mut self) {
-        let len = self.playlists.len() + 1; // +1 for "All ( Library )"
+        let len = self.playlists.len() + 1;
         let i = match self.playlist_list_state.selected() {
             Some(i) => (i + 1) % len,
             None => 0,
@@ -463,9 +411,9 @@ impl App {
         self.playlist_list_state.select(Some(i));
     }
 
-    pub async fn save_config(&self) {
+    pub async fn save_config(&self) -> ChordResult<()> {
         let (sr, bms, rq) = {
-            let mut config = self.settings.config.write().unwrap();
+            let mut config = self.settings.config.write().map_err(|e| ChordError::Internal(e.to_string()))?;
             config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
             config.audio.volume = self.volume;
             config.audio.mode = self.audio.mode.lock().unwrap().clone();
@@ -478,38 +426,25 @@ impl App {
         };
 
         self.audio.update_audio_config(sr, bms, rq);
-
         let config_file = self.settings.config_dir.join("config.toml");
-        let _ = self.settings.save_config(&config_file);
+        self.settings.save_config(&config_file).map_err(|e| ChordError::Config(e.to_string()))
     }
 
     pub async fn save_config_silent(&self) {
-        {
-            let mut config = self.settings.config.write().unwrap();
-            config.audio.device_name = self.audio.device_name.lock().unwrap().clone();
-            config.audio.volume = self.volume;
-            config.audio.mode = self.audio.mode.lock().unwrap().clone();
-        };
-
-        let config_file = self.settings.config_dir.join("config.toml");
-        let _ = self.settings.save_config(&config_file);
+        let _ = self.save_config().await;
     }
 
     pub async fn update(&mut self) {
-        // Update audio clock for visualizer (only when playing)
         if self.is_playing {
             let amp = self.audio.get_amplitude() as f64;
-            // Extremely slow base speed and very subtle modulation to prevent "nervous" visuals
             let speed = 0.005 + (amp * 0.15);
             self.audio_clock += speed;
         }
 
-        // Drain refresh signals
         while self.refresh_rx.try_recv().is_ok() {
-            self.refresh_library().await;
+            let _ = self.refresh_library().await;
         }
 
-        // Drain metadata updates
         while let Ok(update) = self.metadata_rx.try_recv() {
             if self.playing_idx == Some(update.idx) {
                 self.sample_rate = update.sample_rate;
@@ -522,14 +457,12 @@ impl App {
                 self.current_cover_art = update.cover_art;
                 self.current_track_duration = update.duration;
 
-                // Update cached image and reset UI protocol
                 if let Some(art) = &self.current_cover_art {
                     if let Ok(img) = image::load_from_memory(art) {
                         self.cached_image = Some(img);
                         self.image_state = None;
                     }
                 }
-
                 self.needs_redraw = true;
             }
         }
@@ -547,11 +480,10 @@ impl App {
                 self.current_pos = self.accumulated_pos + start.elapsed();
             }
             if self.current_track_duration.as_secs_f64() > 0.0 {
-                self.progress =
-                    (self.current_pos.as_secs_f64() / self.current_track_duration.as_secs_f64()) as f32;
+                self.progress = (self.current_pos.as_secs_f64() / self.current_track_duration.as_secs_f64()) as f32;
                 self.progress = self.progress.clamp(0.0, 1.0);
             }
-            if !self.lyrics.is_empty() && self.lyrics.iter().any(|l| l.time > Duration::from_secs(0)) {
+            if !self.lyrics.is_empty() {
                 let mut idx = 0;
                 for (i, l) in self.lyrics.iter().enumerate() {
                     if l.time <= self.current_pos {
@@ -566,54 +498,24 @@ impl App {
                 }
             }
 
-            if self.progress >= 0.999
-                && !self.playback_track_list.is_empty()
-                && !is_init
-            {
-                let next = self
-                    .playing_idx
-                    .map(|i| (i + 1) % self.playback_track_list.len())
-                    .unwrap_or(0);
-                self.play_track(next).await;
+            if self.progress >= 0.999 && !self.playback_track_list.is_empty() && !is_init {
+                let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
+                let _ = self.play_track(next).await;
             }
-        } else if self.is_playing
-            && is_empty
-            && !is_init
-            && !self.is_starting
-            && !self.playback_track_list.is_empty()
-        {
-            // Auto-advance on end of track OR if the file failed to play (broken track)
-            let next = self
-                .playing_idx
-                .map(|i| (i + 1) % self.playback_track_list.len())
-                .unwrap_or(0);
-
+        } else if self.is_playing && is_empty && !is_init && !self.is_starting && !self.playback_track_list.is_empty() {
+            let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
             if has_error {
                 let detail = self.audio.last_error.lock().unwrap().clone();
-                let error_msg = format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default());
-
-                // Only update last_error if it's different to avoid redundant UI triggers
-                if self.last_error.as_ref() != Some(&error_msg) {
-                    self.last_error = Some(error_msg);
-                }
+                self.last_error = Some(format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default()));
             }
-
-            self.play_track(next).await;
+            let _ = self.play_track(next).await;
         }
-
-        // Always redraw to keep the visualizer animated
         self.needs_redraw = true;
     }
 
     pub fn next(&mut self) {
         let i = match self.list_state.selected() {
-            Some(i) => {
-                if i >= self.filtered_tracks.len() - 1 {
-                    0
-                } else {
-                    i + 1
-                }
-            }
+            Some(i) => if i >= self.filtered_tracks.len() - 1 { 0 } else { i + 1 },
             None => 0,
         };
         self.list_state.select(Some(i));
@@ -621,26 +523,16 @@ impl App {
 
     pub fn previous(&mut self) {
         let i = match self.list_state.selected() {
-            Some(i) => {
-                if i == 0 {
-                    self.filtered_tracks.len() - 1
-                } else {
-                    i - 1
-                }
-            }
+            Some(i) => if i == 0 { self.filtered_tracks.len() - 1 } else { i - 1 },
             None => 0,
         };
         self.list_state.select(Some(i));
     }
 
-    pub async fn play_track(&mut self, idx: usize) {
+    pub async fn play_track(&mut self, idx: usize) -> ChordResult<()> {
         self.is_playing = false;
         self.is_starting = true;
-        let track = if let Some(t) = self.filtered_tracks.get(idx) {
-            t.clone()
-        } else {
-            return;
-        };
+        let track = self.filtered_tracks.get(idx).ok_or_else(|| ChordError::Playback("Track not found".into()))?.clone();
 
         self.current_genre = None;
         self.current_label = None;
@@ -654,7 +546,6 @@ impl App {
         if let Some(path_str) = &track.file_path {
             let path = PathBuf::from(path_str);
             if path.exists() {
-                // Start playback immediately for responsiveness
                 self.audio.play(path.clone());
                 self.is_playing = true;
                 self.playing_idx = Some(idx);
@@ -666,39 +557,14 @@ impl App {
                 self.load_lyrics(&path);
                 self.last_error = None;
 
-                // Offload metadata and cover art loading to background
-                let path_clone = path.clone();
                 let tx = self.metadata_tx.clone();
-                let idx_clone = idx;
-
                 tokio::task::spawn_blocking(move || {
-                    use lofty::file::AudioFile;
-                    use lofty::prelude::*;
-
-                    let duration = crate::player::audio::probe_duration(&path_clone);
-
-                    if let Ok(probed) = lofty::read_from_path(&path_clone) {
+                    if let Ok(probed) = lofty::read_from_path(&path) {
+                        use lofty::file::AudioFile;
+                        use lofty::prelude::*;
                         let props = probed.properties();
-                        let sr = props.sample_rate().unwrap_or(0);
-                        let ch = props.channels().unwrap_or(0);
-                        let mut br = props.audio_bitrate().unwrap_or(0);
-                        let bd = props.bit_depth().unwrap_or(0);
-
-                        if br < 32 {
-                            if let Ok(fs_metadata) = std::fs::metadata(&path_clone) {
-                                let file_size = fs_metadata.len();
-                                let dur = duration.unwrap_or_else(|| props.duration());
-                                let dur_secs = dur.as_secs_f64();
-                                if dur_secs > 0.1 {
-                                    br = ((file_size as f64 * 8.0) / (dur_secs * 1000.0)) as u32;
-                                }
-                            }
-                        }
-                        if br > 10000 {
-                            br /= 1000;
-                        }
-
-                        let final_duration = duration.unwrap_or_else(|| props.duration());
+                        let duration = props.duration();
+                        
                         let mut genre = None;
                         let mut label = None;
                         let mut desc = None;
@@ -706,67 +572,48 @@ impl App {
 
                         if let Some(tag) = probed.primary_tag() {
                             genre = tag.genre().map(|s| s.to_string());
-                            label = tag
-                                .get_string(&lofty::tag::ItemKey::Label)
-                                .map(|s| s.to_string())
-                                .or_else(|| {
-                                    tag.get_string(&lofty::tag::ItemKey::Publisher)
-                                        .map(|s| s.to_string())
-                                });
-                            desc = tag
-                                .get_string(&lofty::tag::ItemKey::Comment)
-                                .map(|s| s.to_string());
-
+                            label = tag.get_string(&lofty::tag::ItemKey::Label).map(|s| s.to_string())
+                                .or_else(|| tag.get_string(&lofty::tag::ItemKey::Publisher).map(|s| s.to_string()));
+                            desc = tag.get_string(&lofty::tag::ItemKey::Comment).map(|s| s.to_string());
                             if let Some(picture) = tag.pictures().first() {
                                 art = Some(picture.data().to_vec());
                             }
                         }
 
                         let _ = tx.send(TrackMetadataUpdate {
-                            idx: idx_clone,
-                            sample_rate: sr,
-                            channels: ch,
-                            bitrate: br,
-                            bit_depth: bd,
+                            idx,
+                            sample_rate: props.sample_rate().unwrap_or(0),
+                            channels: props.channels().unwrap_or(0),
+                            bitrate: props.audio_bitrate().unwrap_or(0),
+                            bit_depth: props.bit_depth().unwrap_or(0),
                             genre,
                             label,
                             description: desc,
                             cover_art: art,
-                            duration: final_duration,
+                            duration,
                         });
                     }
                 });
+                Ok(())
             } else {
-                self.last_error = Some(format!("FILE NOT FOUND: {}", path_str));
+                Err(ChordError::Playback(format!("FILE NOT FOUND: {}", path_str)))
             }
+        } else {
+            Err(ChordError::Playback("No file path provided".into()))
         }
     }
 
     pub async fn toggle_playback(&mut self) {
-        let is_empty = self.audio.is_empty();
-        
-        if is_empty {
-            // Nothing playing, start something
+        if self.audio.is_empty() {
             match self.input_mode {
-                InputMode::Online => {
-                    if let Some(idx) = self.radio_list_state.selected() {
-                        self.play_radio(idx).await;
-                    }
-                }
-                _ => {
-                    if let Some(idx) = self.list_state.selected() {
-                        self.play_track(idx).await;
-                    }
-                }
+                InputMode::Online => if let Some(idx) = self.radio_list_state.selected() { let _ = self.play_radio(idx).await; }
+                _ => if let Some(idx) = self.list_state.selected() { let _ = self.play_track(idx).await; }
             }
         } else {
-            // Audio is active, toggle pause
             if self.is_playing {
                 self.audio.pause();
                 self.is_playing = false;
-                if let Some(start) = self.playback_start {
-                    self.accumulated_pos += start.elapsed();
-                }
+                if let Some(start) = self.playback_start { self.accumulated_pos += start.elapsed(); }
                 self.playback_start = None;
             } else {
                 self.audio.resume();
@@ -777,8 +624,7 @@ impl App {
     }
 
     pub async fn cycle_visualizer(&mut self) {
-        {
-            let mut config = self.settings.config.write().unwrap();
+        if let Ok(mut config) = self.settings.config.write() {
             config.audio.visualizer = config.audio.visualizer.next();
         }
         self.save_config_silent().await;
@@ -787,27 +633,13 @@ impl App {
 
     pub fn filter_tracks(&mut self) {
         let query = self.search_query.to_lowercase();
-        let source = if let Some(tracks) = &self.current_playlist_tracks {
-            tracks
-        } else {
-            &Vec::new() // Strictly no tracks if no playlist is selected
-        };
-
+        let source = self.current_playlist_tracks.as_ref().unwrap_or(&self.all_tracks);
         if query.is_empty() {
             self.filtered_tracks = source.clone();
         } else {
-            self.filtered_tracks = source
-                .iter()
-                .filter(|t| t.search_key.contains(&query))
-                .cloned()
-                .collect();
+            self.filtered_tracks = source.iter().filter(|t| t.search_key.contains(&query)).cloned().collect();
         }
-
-        if self.filtered_tracks.is_empty() {
-            self.list_state.select(None);
-        } else {
-            self.list_state.select(Some(0));
-        }
+        if self.filtered_tracks.is_empty() { self.list_state.select(None); } else { self.list_state.select(Some(0)); }
     }
 
     fn load_lyrics(&mut self, audio_path: &Path) {
@@ -817,17 +649,12 @@ impl App {
             if lrc_path.exists() {
                 if let Ok(content) = std::fs::read_to_string(lrc_path) {
                     self.parse_lrc(&content);
-                    if !self.lyrics.is_empty() {
-                        break;
-                    }
+                    if !self.lyrics.is_empty() { break; }
                 }
             }
         }
         if self.lyrics.is_empty() {
-            self.lyrics.push(crate::player::audio::LyricLine {
-                time: Duration::from_secs(0),
-                text: "NO LYRICS".to_string(),
-            });
+            self.lyrics.push(crate::player::audio::LyricLine { time: Duration::from_secs(0), text: "NO LYRICS".to_string() });
         }
     }
 
@@ -838,7 +665,6 @@ impl App {
                 if parts.len() == 2 {
                     let time_str = parts[0].trim_start_matches('[');
                     let text = parts[1].trim();
-
                     let time_parts: Vec<&str> = time_str.split(':').collect();
                     if time_parts.len() == 2 {
                         let mins = time_parts[0].parse::<u64>().unwrap_or(0);

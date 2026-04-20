@@ -3,7 +3,7 @@ use crate::core::constants::*;
 use crate::player::app::{App, InputMode};
 use crate::player::ui::ui;
 use crate::storage::index::LibraryIndex;
-use anyhow::Result;
+use crate::core::error::{ChordError, ChordResult};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyModifiers},
     execute,
@@ -21,28 +21,32 @@ pub mod app;
 pub mod audio;
 pub mod ui;
 
-pub async fn run_player(settings: Arc<Settings>, index: Arc<LibraryIndex>) -> Result<()> {
-    enable_raw_mode()?;
+pub async fn run_player(settings: Arc<Settings>, index: Arc<LibraryIndex>) -> ChordResult<()> {
+    enable_raw_mode().map_err(|e| ChordError::Internal(e.to_string()))?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
-    let mut app = App::new(settings, index).await?;
-    app.needs_redraw = true; // Ensure first draw happens
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(|e| ChordError::Internal(e.to_string()))?;
+    let mut terminal = Terminal::new(CrosstermBackend::new(stdout)).map_err(|e| ChordError::Internal(e.to_string()))?;
+    
+    // Pass references to App
+    let mut app = App::new(&settings, &index).await?;
+    app.needs_redraw = true; 
     let res = run_app(&mut terminal, &mut app).await;
-    disable_raw_mode()?;
+    
+    disable_raw_mode().map_err(|e| ChordError::Internal(e.to_string()))?;
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
         DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    ).map_err(|e| ChordError::Internal(e.to_string()))?;
+    terminal.show_cursor().map_err(|e| ChordError::Internal(e.to_string()))?;
+    
     if let Err(err) = res {
         println!("ERROR: {:?}", err);
     }
     Ok(())
 }
 
-async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> ChordResult<()> {
     let tick_rate = Duration::from_millis(DEFAULT_TICK_RATE_MS);
     let mut last_tick = Instant::now();
 
@@ -53,7 +57,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
         }
 
         if app.needs_redraw {
-            terminal.draw(|f| ui(f, app))?;
+            terminal.draw(|f| ui(f, app)).map_err(|e| ChordError::Internal(e.to_string()))?;
             app.needs_redraw = false;
         }
 
@@ -61,9 +65,9 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
             .checked_sub(last_tick.elapsed())
             .unwrap_or(Duration::from_millis(1));
 
-        if event::poll(timeout)? {
-            while event::poll(Duration::from_secs(0))? {
-                if let Event::Key(key) = event::read()? {
+        if event::poll(timeout).map_err(|e| ChordError::Internal(e.to_string()))? {
+            while event::poll(Duration::from_secs(0)).map_err(|e| ChordError::Internal(e.to_string()))? {
+                if let Event::Key(key) = event::read().map_err(|e| ChordError::Internal(e.to_string()))? {
                     if key.kind != event::KeyEventKind::Press {
                         continue;
                     }
@@ -77,7 +81,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                     app.last_key_event = Some((key.code, now));
                     app.needs_redraw = true;
 
-                    // --- GLOBAL CTRL KEYS ---
                     if key.modifiers.contains(KeyModifiers::CONTROL) {
                         if key.code == KEY_RADIO_MODE {
                             if app.input_mode == InputMode::Online {
@@ -91,7 +94,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                         }
                     }
 
-                    // --- ESC HANDLING (Always returns to context) ---
                     if key.code == KEY_BACK {
                         app.input_mode = if app.input_mode == InputMode::Search {
                             app.previous_mode
@@ -101,7 +103,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                         continue;
                     }
 
-                    // --- MODE SPECIFIC LOGIC ---
                     match app.input_mode {
                         InputMode::Offline => {
                             match key.code {
@@ -111,30 +112,30 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                 KEY_VOL_UP_1 | KEY_VOL_UP_2 => {
                                     app.volume = (app.volume + 0.05).min(1.0);
                                     app.audio.set_volume(app.volume);
-                                    app.save_config().await;
+                                    let _ = app.save_config().await;
                                 }
                                 KEY_VOL_DOWN => {
                                     app.volume = (app.volume - 0.05).max(0.0);
                                     app.audio.set_volume(app.volume);
-                                    app.save_config().await;
+                                    let _ = app.save_config().await;
                                 }
                                 KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => app.next(),
                                 KEY_LIST_UP | KEY_LIST_UP_VIM => app.previous(),
                                 KEY_CONFIRM => {
                                     if !app.filtered_tracks.is_empty() {
-                                        if let Some(i) = app.list_state.selected() { app.play_track(i).await; }
+                                        if let Some(i) = app.list_state.selected() { let _ = app.play_track(i).await; }
                                     }
                                 }
                                 KEY_NEXT_TRACK_1 | KEY_NEXT_TRACK_2 => {
                                     if !app.filtered_tracks.is_empty() {
                                         app.next();
-                                        if let Some(i) = app.list_state.selected() { app.play_track(i).await; }
+                                        if let Some(i) = app.list_state.selected() { let _ = app.play_track(i).await; }
                                     }
                                 }
                                 KEY_PREV_TRACK_1 | KEY_PREV_TRACK_2 => {
                                     if !app.filtered_tracks.is_empty() {
                                         app.previous();
-                                        if let Some(i) = app.list_state.selected() { app.play_track(i).await; }
+                                        if let Some(i) = app.list_state.selected() { let _ = app.play_track(i).await; }
                                     }
                                 }
                                 KEY_SEARCH_MODE => {
@@ -183,7 +184,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::R
                                     }
                                 }
                                 KEY_CONFIRM => {
-                                    if let Some(i) = app.radio_list_state.selected() { app.play_radio(i).await; }
+                                    if let Some(i) = app.radio_list_state.selected() { let _ = app.play_radio(i).await; }
                                 }
                                 KEY_SEARCH_MODE => {
                                     app.previous_mode = app.input_mode;

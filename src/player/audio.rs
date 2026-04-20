@@ -657,6 +657,7 @@ impl AudioBackend {
     }
 }
 
+#[allow(dead_code)]
 pub fn probe_duration(path: &Path) -> Option<Duration> {
     use std::fs::File;
     use symphonia::core::io::MediaSourceStream;

@@ -143,7 +143,7 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> C
                         }
 
                         InputMode::Search => {
-                            if key.code == KEY_CONFIRM {
+                            if key.code == KEY_CONFIRM || key.code == KEY_SEARCH_MODE {
                                 app.input_mode = app.previous_mode;
                             } else if let KeyCode::Char(c) = key.code {
                                 app.search_query.push(c);

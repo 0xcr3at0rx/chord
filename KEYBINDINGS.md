@@ -10,7 +10,7 @@
 | `Enter` | Play selected track / Station / Confirm Search |
 | `Tab` | Toggle Context selection (Library/Online) |
 | `p` / `Space` | Pause / Resume |
-| `/` | Search / Filter |
+| `/` | Toggle Search / Filter |
 | `Ctrl` + `r` | Toggle Online (Radio) Mode |
 | `+` / `=` | Increase Volume (max 100%) |
 | `-` | Decrease Volume |

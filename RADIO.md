@@ -38,6 +38,6 @@ tags = "Electronic, Techno"
 | `Ctrl` + `r` | Toggle Online Mode / Return to Library |
 | `j` / `k` | Navigate station list |
 | `Enter` | Start streaming selected station |
-| `/` | Search / Filter stations |
+| `/` | Toggle Search / Filter stations |
 | `p` / `Space` | Pause / Resume current stream |
 | `+` / `-` | Control volume |

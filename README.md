@@ -29,6 +29,7 @@ Just run the `chord` command. The app will automatically scan your `music_dir` f
 | `Space` / `p` | Pause / Resume |
 | `l` / `h` | Next / Previous track |
 | `Tab` | Context Select (Library folders) |
+| `/` | Toggle Search / Filter |
 | `Ctrl + r` | Toggle Online (Radio) Mode |
 | `+` / `-` | Volume Control |
 

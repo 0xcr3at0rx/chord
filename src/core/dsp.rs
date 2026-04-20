@@ -73,7 +73,8 @@ impl AudioAnalyzer {
             let mut state = self.state.write().unwrap();
             state.waveform = samples.iter().take(FFT_SIZE).cloned().collect();
             current_amplitude = samples.iter().map(|s| s.abs()).sum::<f32>() / samples.len() as f32;
-            state.amplitude = current_amplitude;
+            // Smooth global amplitude to prevent visual jitter
+            state.amplitude = (state.amplitude * 0.85) + (current_amplitude * 0.15);
         }
 
         if samples.len() >= FFT_SIZE {
@@ -100,11 +101,11 @@ impl AudioAnalyzer {
                 // Update bands with gravity
                 for i in 0..NUM_BANDS {
                     let val = new_bands[i];
-                    // Exponential smoothing on the bands themselves
-                    state.bands[i] = (state.bands[i] * 0.6) + (val * 0.4);
+                    // Even smoother band transitions
+                    state.bands[i] = (state.bands[i] * 0.7) + (val * 0.3);
                     
                     // Slower falloff for peaks
-                    state.peaks[i] = (state.peaks[i] * 0.97).max(val);
+                    state.peaks[i] = (state.peaks[i] * 0.985).max(val);
                 }
             }
         }
@@ -127,8 +128,8 @@ impl AudioAnalyzer {
     }
 
     fn apply_kalman(&mut self, bins: &mut Vec<f32>) {
-        let q = 0.02; // Smoother
-        let r = 0.9;  // Smoother
+        let q = 0.01; // Ultra-smooth
+        let r = 0.95; // High noise rejection
 
         for i in 0..bins.len().min(self.kalman_states.len()) {
             let p = self.kalman_p[i] + q;

@@ -1,0 +1,75 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build release binaries
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: chord
+            asset_name: chord-linux-x86_64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: chord
+            asset_name: chord-linux-aarch64
+            use_cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: chord.exe
+            asset_name: chord-windows-x86_64.exe
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: chord
+            asset_name: chord-macos-x86_64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: chord
+            asset_name: chord-macos-aarch64
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev pkg-config
+
+      - name: Install cross
+        if: matrix.use_cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      - name: Build
+        run: |
+          if [ "${{ matrix.use_cross }}" == "true" ]; then
+            cross build --release --target ${{ matrix.target }}
+          else
+            cargo build --release --target ${{ matrix.target }}
+          fi
+        shell: bash
+
+      - name: Prepare asset
+        run: |
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
+        shell: bash
+
+      - name: Upload binaries to release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: ${{ matrix.asset_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

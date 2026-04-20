@@ -1,17 +1,17 @@
 # Online Mode
 
-**Chord** now supports streaming online radio stations directly from the TUI with an improved, text-based interface.
+**Chord** supports streaming online radio stations directly from the TUI.
 
 ## Entering Online Mode
 
-Press `Ctrl + r` to enter or toggle Online Mode.
+Press `Ctrl + r` to toggle between **Library Mode** and **Online Mode**.
 
 ## Features
 
-- **Public Stations**: Includes over 40 high-quality default public radio stations from curated global directories.
+- **Public Stations**: Includes high-quality default public radio stations.
 - **Custom Stations**: Add your own favorite streams in `~/.config/chord/radio.toml`.
-- **Filtering**: Press `/` in Online Mode to search for specific stations by name or country.
-- **Dynamic Art**: Procedural animated art that reflects the station's energy and amplitude in real-time.
+- **Filtering**: Press `/` in Online Mode to search for specific stations by name or country. Press `/` again or `Enter` to exit search.
+- **Visualizer**: Real-time high-fidelity **Wave** visualizer syncs with live streams.
 
 ## Custom Configuration (`radio.toml`)
 

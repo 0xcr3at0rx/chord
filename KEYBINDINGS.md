@@ -7,10 +7,10 @@
 | `k` / `Up` | Move selection up |
 | `l` | Next track (Library mode) |
 | `h` | Previous track (Library mode) |
-| `Enter` | Play selected track / Station / Confirm Search |
-| `Tab` | Toggle Context selection (Library/Online) |
+| `Enter` | Play selection / Confirm Search |
+| `Tab` | Context selection (Library Folders) |
 | `p` / `Space` | Pause / Resume |
 | `/` | Toggle Search / Filter |
 | `Ctrl` + `r` | Toggle Online (Radio) Mode |
-| `+` / `=` | Increase Volume (max 100%) |
+| `+` / `=` | Increase Volume |
 | `-` | Decrease Volume |

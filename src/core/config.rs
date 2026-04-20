@@ -92,15 +92,9 @@ impl ThemeConfig {
 
 impl Default for LibraryConfig {
     fn default() -> Self {
-        let music_dir = directories::UserDirs::new()
-            .and_then(|u| u.audio_dir().map(|p| p.to_path_buf()))
-            .unwrap_or_else(|| {
-                if let Some(proj_dirs) = ProjectDirs::from("", "", "chord") {
-                    proj_dirs.data_dir().join("Music")
-                } else {
-                    PathBuf::from("Music")
-                }
-            });
+        let music_dir = directories::BaseDirs::new()
+            .map(|d| d.home_dir().join("music"))
+            .unwrap_or_else(|| PathBuf::from("music"));
 
         Self {
             music_dir,

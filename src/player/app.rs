@@ -495,16 +495,29 @@ impl<'a> App<'a> {
             }
 
             if self.progress >= 0.999 && !self.playback_track_list.is_empty() && !is_init {
-                let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
-                let _ = self.play_track(next).await;
+                let is_radio = self.current_track.as_ref().map(|t| t.status.as_deref() == Some("radio")).unwrap_or(false);
+                if !is_radio {
+                    let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
+                    let _ = self.play_track(next).await;
+                }
             }
         } else if self.is_playing && is_empty && !is_init && !self.is_starting && !self.playback_track_list.is_empty() {
-            let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
-            if has_error {
-                let detail = self.audio.last_error.lock().unwrap().clone();
-                self.last_error = Some(format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default()));
+            let is_radio = self.current_track.as_ref().map(|t| t.status.as_deref() == Some("radio")).unwrap_or(false);
+            if !is_radio {
+                let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
+                if has_error {
+                    let detail = self.audio.last_error.lock().unwrap().clone();
+                    self.last_error = Some(format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default()));
+                }
+                let _ = self.play_track(next).await;
+            } else if has_error {
+                // For radio, try to reconnect by re-triggering play_radio if it was a real error
+                if let Some(track) = &self.current_track {
+                    if let Some(idx) = self.filtered_stations.iter().position(|s| s.name == track.title) {
+                        let _ = self.play_radio(idx).await;
+                    }
+                }
             }
-            let _ = self.play_track(next).await;
         }
         self.needs_redraw = true;
     }

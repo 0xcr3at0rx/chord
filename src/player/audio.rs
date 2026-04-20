@@ -349,45 +349,57 @@ impl AudioPlayer {
 
                         std::thread::spawn(move || {
                             if let Some(handle) = handle_shared {
-                                let res = (|| -> Result<Sink, String> {
-                                    let response = reqwest::blocking::Client::builder()
-                                        .user_agent("Chord/1.1 (https://github.com/0xcr3at0rx/chord)")
-                                        .timeout(Duration::from_secs(20))
-                                        .redirect(reqwest::redirect::Policy::limited(10))
-                                        .build()
-                                        .map_err(|e| format!("Client: {}", e))?
-                                        .get(&url)
-                                        .header("Icy-MetaData", "0")
-                                        .header("Connection", "keep-alive")
-                                        .send()
-                                        .map_err(|e| format!("Request: {}", e))?;
+                                let mut retry_count = 0;
+                                let max_retries = 3;
 
-                                    if !response.status().is_success() {
-                                        return Err(format!("HTTP {}", response.status()));
-                                    }
+                                while retry_count < max_retries {
+                                    let res = (|| -> Result<Sink, String> {
+                                        let response = reqwest::blocking::Client::builder()
+                                            .user_agent("Chord/1.2 (https://github.com/0xcr3at0rx/chord)")
+                                            .timeout(Duration::from_secs(15))
+                                            .connect_timeout(Duration::from_secs(10))
+                                            .redirect(reqwest::redirect::Policy::limited(10))
+                                            .build()
+                                            .map_err(|e| format!("Client: {}", e))?
+                                            .get(&url)
+                                            .header("Icy-MetaData", "0")
+                                            .header("Connection", "keep-alive")
+                                            .send()
+                                            .map_err(|e| format!("Request: {}", e))?;
 
-                                    let reader = StreamingReader::new(response);
-                                    let source = Decoder::new(reader).map_err(|e| format!("Decoder: {}", e))?;
-                                    let source = rodio::Source::convert_samples::<f32>(source);
-                                    let source = VisualizerTracker { 
-                                        inner: source, 
-                                        amplitude: amplitude_shared_thread,
-                                        sample_tx: sample_tx_clone,
-                                    };
-                                    let sink = Sink::try_new(&handle).map_err(|e| format!("Sink: {}", e))?;
-                                    sink.set_volume(volume);
-                                    sink.append(source);
-                                    sink.play();
-                                    Ok(sink)
-                                })();
+                                        if !response.status().is_success() {
+                                            return Err(format!("HTTP {}", response.status()));
+                                        }
 
-                                match res {
-                                    Ok(sink) => {
-                                        let _ = tx_clone.send(AudioCmd::RegisterRadioSink(sink, request_id));
-                                    }
-                                    Err(e) => {
-                                        *last_error_shared.lock().unwrap() = Some(e);
-                                        has_error_shared.store(true, std::sync::atomic::Ordering::Relaxed);
+                                        let reader = StreamingReader::new(response);
+                                        let source = Decoder::new(reader).map_err(|e| format!("Decoder: {}", e))?;
+                                        let source = rodio::Source::convert_samples::<f32>(source);
+                                        let source = VisualizerTracker { 
+                                            inner: source, 
+                                            amplitude: amplitude_shared_thread.clone(),
+                                            sample_tx: sample_tx_clone.clone(),
+                                        };
+                                        let sink = Sink::try_new(&handle).map_err(|e| format!("Sink: {}", e))?;
+                                        sink.set_volume(volume);
+                                        sink.append(source);
+                                        sink.play();
+                                        Ok(sink)
+                                    })();
+
+                                    match res {
+                                        Ok(sink) => {
+                                            let _ = tx_clone.send(AudioCmd::RegisterRadioSink(sink, request_id));
+                                            return;
+                                        }
+                                        Err(e) => {
+                                            retry_count += 1;
+                                            if retry_count >= max_retries {
+                                                *last_error_shared.lock().unwrap() = Some(format!("Connection failed after {} attempts: {}", max_retries, e));
+                                                has_error_shared.store(true, std::sync::atomic::Ordering::Relaxed);
+                                            } else {
+                                                std::thread::sleep(Duration::from_millis(500 * retry_count));
+                                            }
+                                        }
                                     }
                                 }
                             }

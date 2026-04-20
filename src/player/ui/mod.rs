@@ -24,61 +24,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
         ])
         .split(size);
 
-    // 0. TOP BAR
-    let playlist_name = app
-        .current_playlist
-        .as_ref()
-        .map(|p| p.name.as_str())
-        .unwrap_or("All ( Library )");
-
-    let top_bar_spans = vec![
-        Span::styled(
-            " CHORD ",
-            Style::default()
-                .fg(app.theme.accent)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" | "),
-        Span::styled(
-            format!(" {} ", playlist_name.to_uppercase()),
-            Style::default().fg(app.theme.dim),
-        ),
-    ];
-
-    // Add audio device to top right
-    let device_name = app
-        .audio
-        .device_name
-        .lock()
-        .unwrap()
-        .clone()
-        .unwrap_or_else(|| "NONE".to_string());
-    let audio_span = Span::styled(
-        format!(" [ AUDIO: {} ] ", device_name.to_uppercase()),
-        Style::default()
-            .fg(app.theme.accent_dim)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let top_bar_para =
-        Paragraph::new(Line::from(top_bar_spans)).style(Style::default().bg(app.theme.status_bg));
-    f.render_widget(top_bar_para, main_layout[0]);
-
-    f.render_widget(
-        Paragraph::new(Line::from(vec![audio_span])).alignment(Alignment::Right),
-        main_layout[0],
-    );
-
     let content_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(25), Constraint::Percentage(75)])
-        .split(main_layout[1]);
+        .split(main_layout[0]);
 
     // 1. SIDEBAR & 2. MAIN AREA
     {
@@ -103,12 +57,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg))
-                        .title(Line::from(vec![
-                            Span::styled(" SELECT ", Style::default().bg(Color::Magenta).fg(app.theme.bg)),
-                            Span::raw(" "),
-                            Span::styled("PLAYLIST", Style::default().fg(app.theme.dim)),
-                        ])),
+                        .border_style(Style::default().fg(app.theme.status_bg)),
                 )
                 .highlight_style(
                     Style::default()
@@ -149,12 +98,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 ]));
             }
 
-            let title_style = if is_search {
-                Style::default().bg(app.theme.accent).fg(app.theme.bg)
-            } else {
-                Style::default().bg(Color::Blue).fg(app.theme.bg)
-            };
-
             if items.is_empty() && is_search {
                 let msg = format!("  No stations match '{}'", app.search_query);
                 let sidebar = Paragraph::new(vec![
@@ -171,12 +114,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg))
-                        .title(Line::from(vec![
-                            Span::styled(" ONLINE ", title_style),
-                            Span::raw(" "),
-                            Span::styled("ALL STATIONS", Style::default().fg(app.theme.dim)),
-                        ])),
+                        .border_style(Style::default().fg(app.theme.status_bg)),
                 );
                 f.render_widget(sidebar, content_layout[0]);
             } else {
@@ -184,12 +122,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     .block(
                         Block::default()
                             .borders(Borders::RIGHT)
-                            .border_style(Style::default().fg(app.theme.status_bg))
-                            .title(Line::from(vec![
-                                Span::styled(" ONLINE ", title_style),
-                                Span::raw(" "),
-                                Span::styled("ALL STATIONS", Style::default().fg(app.theme.dim)),
-                            ])),
+                            .border_style(Style::default().fg(app.theme.status_bg)),
                     )
                     .highlight_style(
                         Style::default()
@@ -280,22 +213,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 })
                 .collect();
 
-            let sidebar_title = if let Some(p) = &app.current_playlist {
-                format!("PLAYLIST: {}", p.name.to_uppercase())
-            } else {
-                "LIBRARY".to_string()
-            };
-
             let sidebar = List::new(items)
                 .block(
                     Block::default()
                         .borders(Borders::RIGHT)
-                        .border_style(Style::default().fg(app.theme.status_bg))
-                        .title(Line::from(vec![
-                            Span::styled(" OFFLINE ", Style::default().bg(app.theme.dim).fg(app.theme.bg)),
-                            Span::raw(" "),
-                            Span::styled(sidebar_title, Style::default().fg(app.theme.dim)),
-                        ])),
+                        .border_style(Style::default().fg(app.theme.status_bg)),
                 )
                 .highlight_style(
                     Style::default()
@@ -406,16 +328,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             // --- ROW 1: Title ---
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    if is_radio {
-                        Span::styled(
-                            "LIVE: ",
-                            Style::default()
-                                .fg(app.theme.critical)
-                                .add_modifier(Modifier::BOLD),
-                        )
-                    } else {
-                        Span::raw("")
-                    },
                     Span::styled(
                         &track.title,
                         Style::default()
@@ -428,10 +340,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             );
 
             // --- ROW 2: Artist ---
-            let artist_label = if is_radio { "Station: " } else { "Artist:  " };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(artist_label, Style::default().fg(app.theme.dim)),
                     Span::styled(&track.artist, Style::default().fg(app.theme.fg)),
                 ]))
                 .alignment(Alignment::Left),
@@ -439,10 +349,8 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             );
 
             // --- ROW 3: Album ---
-            let album_label = if is_radio { "Tags:    " } else { "Album:   " };
             f.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled(album_label, Style::default().fg(app.theme.dim)),
                     Span::styled(
                         track.album.as_deref().unwrap_or("Unknown"),
                         Style::default()
@@ -639,15 +547,14 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(12),     // Mode
             Constraint::Min(0),         // Search / Title
-            Constraint::Percentage(25), // Progress Bar
             Constraint::Length(12),     // Duration
             Constraint::Length(10),     // Vol
         ])
-        .split(main_layout[2]);
+        .split(main_layout[1]);
 
     let (mode_str, mode_style) = match app.input_mode {
         InputMode::Offline => (
-            " OFFLINE ",
+            " MUSIC ",
             Style::default()
                 .fg(app.theme.bg)
                 .bg(app.theme.dim)
@@ -668,7 +575,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         ),
         InputMode::Online => (
-            " ONLINE ",
+            " RADIO ",
             Style::default()
                 .fg(app.theme.bg)
                 .bg(Color::Blue)
@@ -697,31 +604,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         status_chunks[1],
     );
 
-    // Progress Mini-Gauge
-    if !is_radio {
-        f.render_widget(
-            Paragraph::new(" [ LOCAL PLAYBACK ] ")
-                .style(
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .bg(app.theme.status_bg),
-                )
-                .alignment(Alignment::Center),
-            status_chunks[2],
-        );
-    } else {
-        f.render_widget(
-            Paragraph::new(" [ LIVE STREAM ] ")
-                .style(
-                    Style::default()
-                        .fg(app.theme.accent)
-                        .bg(app.theme.status_bg),
-                )
-                .alignment(Alignment::Center),
-            status_chunks[2],
-        );
-    }
-
     let duration_str = if is_radio {
         " --:-- / --:-- ".to_string()
     } else {
@@ -735,7 +617,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         Paragraph::new(duration_str)
             .alignment(Alignment::Right)
             .style(Style::default().fg(app.theme.dim).bg(app.theme.status_bg)),
-        status_chunks[3],
+        status_chunks[2],
     );
 
     f.render_widget(
@@ -746,6 +628,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     .fg(app.theme.accent_dim)
                     .bg(app.theme.status_bg),
             ),
-        status_chunks[4],
+        status_chunks[3],
     );
 }

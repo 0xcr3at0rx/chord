@@ -69,7 +69,7 @@ pub fn render_visualizer(
     is_playing: bool,
     width: u16,
     height: u16,
-    seed: u64,
+    raw_time: f64,
     dsp: &DspState,
     theme: &crate::core::constants::Theme,
     mode: VisualizerMode,
@@ -83,171 +83,124 @@ pub fn render_visualizer(
         return lines;
     }
 
-    let time = seed as f64 / 3000.0; // Ultra-slow, cinematic motion
+    let time = raw_time * 0.1; // Slow down for cinematic feel
     let amplitude = dsp.amplitude as f64;
-    let vol = (amplitude * 12.0).clamp(0.05, 4.0);
-    let beat_warp = if dsp.is_beat { 1.04 } else { 1.0 };
+    let vol = (amplitude * 14.0).clamp(0.05, 4.0);
+    let beat_warp = if dsp.is_beat { 1.05 } else { 1.0 };
+
+    // Braille utility for 2x4 density
+    let get_braille = |grid: [[bool; 2]; 4]| -> char {
+        let mut code = 0;
+        if grid[0][0] { code |= 1; }
+        if grid[1][0] { code |= 2; }
+        if grid[2][0] { code |= 4; }
+        if grid[0][1] { code |= 8; }
+        if grid[1][1] { code |= 16; }
+        if grid[2][1] { code |= 32; }
+        if grid[3][0] { code |= 64; }
+        if grid[3][1] { code |= 128; }
+        std::char::from_u32(0x2800 + code).unwrap_or(' ')
+    };
 
     for y_row in 0..height {
         let mut spans = Vec::new();
         let norm_y = (height as f64 - 1.0 - y_row as f64) / height as f64;
-        let mid_y = 0.5;
 
         for i in 0..width {
             let x = i as f64;
             let norm_x = x / width as f64;
-            let _envelope = (-(norm_x - 0.5).powi(2) * 6.0).exp();
 
-            let (is_active, char_idx, shapes, custom_color) = match mode {
-                VisualizerMode::Wave => {
-                    let sample_idx = (norm_x * (dsp.waveform.len() as f64 - 1.0)) as usize;
-                    let sample = dsp.waveform.get(sample_idx).cloned().unwrap_or(0.0) as f64;
-                    let wave = sample * 0.5 * vol + mid_y;
-                    let dist = (norm_y - wave).abs();
-                    let hue_shift = (time * 0.08 + norm_x).sin() * 0.5 + 0.5;
-                    let color = interpolate_color(theme.accent, theme.critical, hue_shift);
+            // GPU-style Shader Logic using sub-pixels (Braille)
+            let mut braille_grid = [[false; 2]; 4];
+            let mut active_count = 0;
+            let mut avg_hue = 0.0;
+
+            for sy in 0..4 {
+                for sx in 0..2 {
+                    let sub_x = norm_x + (sx as f64 / (width as f64 * 2.0));
+                    let sub_y = norm_y + (sy as f64 / (height as f64 * 4.0));
                     
-                    let idx = if dist < 0.003 * vol { 4 } 
-                             else if dist < 0.01 * vol { 3 }
-                             else if dist < 0.02 * vol { 2 }
-                             else { 1 };
-                    (
-                        dist < 0.04 * vol,
-                        idx,
-                        [" ", "·", "≈", "≋", "█"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Bar => {
-                    let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                    let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 2.8 * vol).min(1.0);
-                    let peak = (dsp.peaks.get(band_idx).cloned().unwrap_or(0.0) as f64 * 2.8 * vol).min(1.0);
-                    
-                    let is_peak = (norm_y - peak).abs() < 0.012;
-                    let color = if is_peak {
-                        theme.critical
-                    } else {
-                        interpolate_color(theme.accent_dim, theme.accent, (norm_y / h.max(0.1)).min(1.0))
-                    };
-                    
-                    let fill_idx = if norm_y < h - 0.05 { 4 }
-                                 else if norm_y < h - 0.02 { 3 }
-                                 else if norm_y < h { 2 }
-                                 else { 1 };
-                    
-                    (
-                        norm_y < h || is_peak,
-                        if is_peak { 4 } else { fill_idx },
-                        [" ", " ", "▄", "▆", "█"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::BarDot => {
-                    let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                    let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.2 * vol).min(1.0);
-                    let dist = (norm_y - h).abs();
-                    let color = interpolate_color(theme.accent, theme.fg, (1.0 - dist / 0.12).max(0.0));
-                    
-                    let idx = if dist < 0.008 { 4 }
-                             else if dist < 0.025 { 3 }
-                             else if dist < 0.05 { 2 }
-                             else { 1 };
-                    (dist < 0.07, idx, [" ", "·", "•", "●", "⬤"], Some(color))
-                }
-                VisualizerMode::Rain => {
-                    let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                    let energy = dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64;
-                    
-                    // Ultra-efficient, lag-free rain physics
-                    // Fixed period per column with audio-driven phase shift
-                    let column_offset = (x * 0.54321).fract();
-                    let speed = 0.2 + column_offset * 0.3 + energy * 1.2;
-                    let drop_cycle = (time * speed + column_offset) % 1.4;
-                    let head_y = 1.3 - drop_cycle;
-                    
-                    let dist = (norm_y - head_y).abs();
-                    let is_in_drop = norm_y <= head_y && dist < 0.6;
-                    
-                    let color = interpolate_color(theme.bg, theme.accent, (1.0 - dist / 0.6).clamp(0.0, 1.0));
-                    
-                    let idx = if dist < 0.01 { 4 } // Head
-                             else if dist < 0.03 { 3 } 
-                             else if dist < 0.08 { 2 } 
-                             else if dist < 0.2 { 1 } 
-                             else { 0 };
-                    
-                    // Smooth splash at bottom
-                    let splash_y = 0.04;
-                    let is_splashing = norm_y < splash_y && head_y < splash_y;
-                    let (active, final_idx) = if is_splashing {
-                        let splash_frame = ((time * 15.0 + x).sin().abs() * 3.0) as usize + 1;
-                        (true, splash_frame)
-                    } else {
-                        (is_in_drop && energy > 0.01, idx)
+                    let (active, hue) = match mode {
+                        VisualizerMode::Wave => {
+                            let sample_idx = (sub_x * (dsp.waveform.len() as f64 - 1.0)) as usize;
+                            let sample = dsp.waveform.get(sample_idx).cloned().unwrap_or(0.0) as f64;
+                            let wave = sample * 0.5 * vol + 0.5;
+                            let dist = (sub_y - wave).abs();
+                            (dist < 0.02 * vol, (time * 0.1 + sub_x).sin() * 0.5 + 0.5)
+                        }
+                        VisualizerMode::Bar => {
+                            let band_idx = (sub_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
+                            let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.5 * vol).min(1.0);
+                            let peak = (dsp.peaks.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.5 * vol).min(1.0);
+                            let is_peak = (sub_y - peak).abs() < 0.01;
+                            (sub_y < h || is_peak, sub_y / h.max(0.1))
+                        }
+                        VisualizerMode::BarDot => {
+                            let band_idx = (sub_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
+                            let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 4.0 * vol).min(1.0);
+                            let dist = (sub_y - h).abs();
+                            (dist < 0.015 * vol, sub_x)
+                        }
+                        VisualizerMode::Rain => {
+                            let band_idx = (sub_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
+                            let energy = dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64;
+                            let speed = 0.4 + (sub_x * 7.7).fract() * 0.2 + energy * 2.0;
+                            let drop_pos = (time * speed + (sub_x * 0.5)) % 1.4;
+                            let head_y = 1.3 - drop_pos;
+                            let dist = (sub_y - head_y).abs();
+                            let is_splash = sub_y < 0.05 && head_y < 0.05;
+                            (sub_y <= head_y && dist < 0.4 || is_splash, 1.0 - dist / 0.4)
+                        }
+                        VisualizerMode::Retro => {
+                            let chroma_idx = (sub_x * 12.0) as usize % 12;
+                            let chroma_val = dsp.chromagram[chroma_idx] as f64;
+                            let grid = (sub_x * 40.0).sin() * (sub_y * 20.0).cos();
+                            (grid.abs() < chroma_val * 0.5 * beat_warp, chroma_val)
+                        }
+                        VisualizerMode::Glitch => {
+                            let noise = (sub_x * 50.0 + time * 5.0).sin() * (sub_y * 30.0 + time).cos();
+                            (noise.abs() > 0.98 - (amplitude * 0.1), sub_x)
+                        }
+                        VisualizerMode::Noise => {
+                            let n = (sub_x * 10.0 + sub_y * 10.0 + time * 2.0).sin().abs();
+                            (n < vol * 0.4, n)
+                        }
+                        _ => (false, 0.0),
                     };
 
-                    (active, final_idx, [" ", "·", "│", "┃", "╽"], Some(color))
-                }
-                VisualizerMode::Retro => {
-                    let chroma_idx = (norm_x * 12.0) as usize % 12;
-                    let chroma_val = dsp.chromagram[chroma_idx] as f64;
-                    let scanline = (norm_y * 15.0 + time * 2.0).sin() * 0.5 + 0.5;
-                    let v = ((x * 0.02 + time * 0.05).sin() * 2.0 + (norm_y * 2.0)).floor() % 2.0;
-                    let color = interpolate_color(theme.critical, theme.accent, chroma_val * scanline);
-                    
-                    let idx = if chroma_val > 0.9 { 4 }
-                             else if chroma_val > 0.7 { 3 }
-                             else if chroma_val > 0.4 { 2 }
-                             else { 1 };
-                    
-                    (v == 0.0 && chroma_val > 0.08 * beat_warp, idx, [" ", "·", "▒", "▓", "█"], Some(color))
-                }
-                VisualizerMode::Glitch => {
-                    let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                    let energy = dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64;
-                    let g = (time * 3.0 + energy * 15.0 + x * 0.2).sin() > 0.996;
-                    let glitch_color = if (time * 8.0).cos() > 0.0 { theme.accent } else { theme.critical };
-                    
-                    let idx = ((time * 4.0 + x).cos().abs() * 4.0) as usize;
-                    (g && vol > 0.1, idx.clamp(1, 4), [" ", "▖", "▗", "▘", "▙"], Some(glitch_color))
-                }
-                VisualizerMode::Noise => {
-                    let noise_val = (x * 0.5 + norm_y * 0.5 + time * 3.0).sin();
-                    let n = noise_val.abs() * (0.3 + amplitude * 1.5);
-                    let color = interpolate_color(theme.bg, theme.dim, n.min(1.0));
-                    
-                    let idx = (n * 4.0) as usize;
-                    (
-                        n > 0.12,
-                        idx.clamp(1, 4),
-                        [" ", "░", "▒", "▓", "█"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::None => (false, 0, [" ", " ", " ", " ", " "], None),
-            };
-
-            let mut final_idx = 0;
-            let mut color = theme.bg;
-            if is_active {
-                final_idx = char_idx;
-                if let Some(c) = custom_color {
-                    color = c;
-                } else {
-                    color = if char_idx == 4 {
-                        theme.accent
-                    } else {
-                        theme.accent_dim
-                    };
-                }
-            } else {
-                let glow = (norm_x * 12.0 + time).sin().abs() * (norm_y * 6.0).cos().abs();
-                if glow > 0.992 {
-                    final_idx = 1;
-                    color = theme.status_bg;
+                    if active {
+                        braille_grid[3 - sy][sx] = true;
+                        active_count += 1;
+                        avg_hue += hue;
+                    }
                 }
             }
-            spans.push(Span::styled(shapes[final_idx.clamp(0, shapes.len()-1)], Style::default().fg(color)));
+
+            if active_count > 0 {
+                let color = match mode {
+                    VisualizerMode::Bar => {
+                        let h = avg_hue / active_count as f64;
+                        interpolate_color(theme.accent_dim, theme.accent, h.min(1.0))
+                    }
+                    VisualizerMode::Rain => {
+                        let d = avg_hue / active_count as f64;
+                        interpolate_color(theme.bg, theme.accent, d.clamp(0.0, 1.0))
+                    }
+                    _ => {
+                        let h = avg_hue / active_count as f64;
+                        interpolate_color(theme.accent, theme.critical, h.clamp(0.0, 1.0))
+                    }
+                };
+                spans.push(Span::styled(get_braille(braille_grid).to_string(), Style::default().fg(color)));
+            } else {
+                // Subtle background glow (GPU shader style)
+                let glow = (norm_x * 10.0 + time).sin().abs() * (norm_y * 5.0).cos().abs();
+                if glow > 0.995 {
+                    spans.push(Span::styled("·", Style::default().fg(theme.status_bg)));
+                } else {
+                    spans.push(Span::raw(" "));
+                }
+            }
         }
         lines.push(Line::from(spans));
     }

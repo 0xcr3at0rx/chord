@@ -465,7 +465,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 app.is_playing,
                 vis_width,
                 vis_height,
-                (app.audio_clock * 100.0) as u64,
+                app.audio_clock,
                 &dsp_state,
                 &app.theme,
                 visualizer_mode,

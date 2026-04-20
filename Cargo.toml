@@ -21,3 +21,7 @@ crossterm = { version = "0.27", features = ["events"] }
 ratatui-image = "3.0.0"
 image = "0.25"
 rayon = "1.12.0"
+rustfft = "6.4.1"
+realfft = "3.5.0"
+ringbuf = "0.4.8"
+crossbeam-channel = "0.5.15"

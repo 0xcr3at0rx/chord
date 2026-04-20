@@ -4,73 +4,27 @@ use ratatui::text::{Line, Span};
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub enum VisualizerMode {
     #[default]
-    Bars,
-    BarsDot,
+    Bar,
+    BarDot,
     Rain,
-    BarsOutline,
-    Bricks,
-    Columns,
-    ClassicPeak,
     Wave,
-    Scatter,
-    Flame,
     Retro,
-    Pulse,
-    Matrix,
-    Binary,
-    Sakura,
-    Firework,
-    Bubbles,
-    Logo,
-    Terrain,
     Glitch,
-    Scope,
-    Heartbeat,
-    Butterfly,
-    Lightning,
-    Blocks,
-    Dots,
     Noise,
-    Interference,
-    Orbit,
-    Particles,
     None,
 }
 
 impl VisualizerMode {
     pub fn next(&self) -> Self {
         match self {
-            Self::Bars => Self::BarsDot,
-            Self::BarsDot => Self::Rain,
-            Self::Rain => Self::BarsOutline,
-            Self::BarsOutline => Self::Bricks,
-            Self::Bricks => Self::Columns,
-            Self::Columns => Self::ClassicPeak,
-            Self::ClassicPeak => Self::Wave,
-            Self::Wave => Self::Scatter,
-            Self::Scatter => Self::Flame,
-            Self::Flame => Self::Retro,
-            Self::Retro => Self::Pulse,
-            Self::Pulse => Self::Matrix,
-            Self::Matrix => Self::Binary,
-            Self::Binary => Self::Sakura,
-            Self::Sakura => Self::Firework,
-            Self::Firework => Self::Bubbles,
-            Self::Bubbles => Self::Logo,
-            Self::Logo => Self::Terrain,
-            Self::Terrain => Self::Glitch,
-            Self::Glitch => Self::Scope,
-            Self::Scope => Self::Heartbeat,
-            Self::Heartbeat => Self::Butterfly,
-            Self::Butterfly => Self::Lightning,
-            Self::Lightning => Self::Blocks,
-            Self::Blocks => Self::Dots,
-            Self::Dots => Self::Noise,
-            Self::Noise => Self::Interference,
-            Self::Interference => Self::Orbit,
-            Self::Orbit => Self::Particles,
-            Self::Particles => Self::None,
-            Self::None => Self::Bars,
+            Self::Bar => Self::BarDot,
+            Self::BarDot => Self::Rain,
+            Self::Rain => Self::Wave,
+            Self::Wave => Self::Retro,
+            Self::Retro => Self::Glitch,
+            Self::Glitch => Self::Noise,
+            Self::Noise => Self::None,
+            Self::None => Self::Bar,
         }
     }
 }
@@ -109,12 +63,14 @@ fn interpolate_color(c1: Color, c2: Color, t: f64) -> Color {
     )
 }
 
+use crate::core::dsp::DspState;
+
 pub fn render_visualizer(
     is_playing: bool,
     width: u16,
     height: u16,
     seed: u64,
-    amplitude: f64,
+    dsp: &DspState,
     theme: &crate::core::constants::Theme,
     mode: VisualizerMode,
 ) -> Vec<Line<'static>> {
@@ -128,13 +84,9 @@ pub fn render_visualizer(
     }
 
     let time = seed as f64 / 100.0;
-    
-    // Audio-driven dynamic time: speeds up on beats
-    let dynamic_time = time + (amplitude * 5.0);
+    let amplitude = dsp.amplitude as f64;
     let vol = (amplitude * 25.0).clamp(0.05, 4.0);
-
-    // Dynamic scale factor based on amplitude for "beat" effects
-    let beat_warp = 1.0 + (amplitude * 2.0);
+    let beat_warp = if dsp.is_beat { 1.2 } else { 1.0 };
 
     for y_row in 0..height {
         let mut spans = Vec::new();
@@ -144,24 +96,26 @@ pub fn render_visualizer(
         for i in 0..width {
             let x = i as f64;
             let norm_x = x / width as f64;
-            let envelope = (-(norm_x - 0.5).powi(2) * 6.0).exp();
+            let _envelope = (-(norm_x - 0.5).powi(2) * 6.0).exp();
 
             let (is_active, char_idx, shapes, custom_color) = match mode {
                 VisualizerMode::Wave => {
-                    let ribbon_width = 0.12 * vol;
-                    let wave = (dynamic_time * 3.5 + x * 0.12 * beat_warp).sin() * 0.4 * vol + mid_y;
+                    let sample_idx = (norm_x * (dsp.waveform.len() as f64 - 1.0)) as usize;
+                    let sample = dsp.waveform.get(sample_idx).cloned().unwrap_or(0.0) as f64;
+                    let wave = sample * 0.8 * vol + mid_y;
                     let dist = (norm_y - wave).abs();
-                    let hue_shift = (dynamic_time * 0.5 + norm_x).sin() * 0.5 + 0.5;
+                    let hue_shift = (time * 0.5 + norm_x).sin() * 0.5 + 0.5;
                     let color = interpolate_color(theme.accent, theme.critical, hue_shift);
                     (
-                        dist < ribbon_width,
-                        if dist < ribbon_width * 0.4 { 4 } else { 2 },
+                        dist < 0.05 * vol,
+                        if dist < 0.02 * vol { 4 } else { 2 },
                         [" ", "·", "≈", "≋", "█"],
                         Some(color),
                     )
                 }
-                VisualizerMode::Bars => {
-                    let h = ((x * 0.8 * beat_warp + dynamic_time * 2.5).sin() * 0.35 + 0.5) * vol * envelope;
+                VisualizerMode::Bar => {
+                    let bin_idx = (norm_x * (dsp.bins.len() as f64 / 4.0)) as usize; // Use lower half of spectrum
+                    let h = (dsp.bins.get(bin_idx).cloned().unwrap_or(0.0) as f64 * 2.0 * vol).min(1.0);
                     let color = interpolate_color(theme.accent_dim, theme.accent, (norm_y / h.max(0.1)).min(1.0));
                     (
                         norm_y < h,
@@ -170,235 +124,43 @@ pub fn render_visualizer(
                         Some(color),
                     )
                 }
-                VisualizerMode::Blocks => {
-                    let cell_x = (norm_x * 14.0 * beat_warp).floor();
-                    let cell_y = (norm_y * 7.0 * beat_warp).floor();
-                    let noise = (cell_x * 0.82 + cell_y * 1.1 + dynamic_time * 6.0).sin().abs();
-                    let color = interpolate_color(theme.accent_dim, theme.accent, noise);
-                    (
-                        noise < vol * 0.65,
-                        if noise < vol * 0.35 { 4 } else { 2 },
-                        [" ", "░", "▒", "▓", "█"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Pulse => {
-                    let dx = (norm_x - 0.5) * 2.8;
-                    let dy = (norm_y - 0.5) * 2.2;
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    let ring = (dist - vol * 0.9 * beat_warp).abs();
-                    let pulse_color = interpolate_color(theme.accent, theme.critical, (dynamic_time.sin() * 0.5 + 0.5).abs());
-                    (
-                        ring < 0.25,
-                        if ring < 0.1 { 4 } else { 2 },
-                        [" ", "·", "o", "O", "◎"],
-                        Some(pulse_color),
-                    )
-                }
-                VisualizerMode::Dots => {
-                    let sparkle = (x * 0.52 * beat_warp + norm_y * 0.95 + dynamic_time * 12.0).cos().abs();
-                    let is_active = sparkle > (1.25 - vol * 0.65);
-                    let color = if is_active {
-                        interpolate_color(theme.accent, theme.fg, (sparkle - 0.6) / 0.4)
-                    } else { theme.bg };
-                    (is_active, 4, [" ", " ", "·", "•", "●"], Some(color))
-                }
-                VisualizerMode::Matrix => {
-                    let speed = 5.0 + vol * 12.0;
-                    let trail = (x * 17.0 + dynamic_time * speed) % 20.0;
-                    let dist = ((1.0 - norm_y) * 20.0 - trail).abs();
-                    let color = interpolate_color(theme.dim, theme.accent, 1.0 - (dist / 2.5).min(1.0));
-                    (
-                        dist < 2.5 * beat_warp,
-                        if dist < 1.0 * beat_warp { 4 } else { 2 },
-                        [" ", " ", ".", "1", "0"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Noise => {
-                    let n = (x * 1.8 + norm_y * 1.8 + dynamic_time * 30.0).sin().abs();
-                    let color = interpolate_color(theme.bg, theme.dim, n);
-                    (
-                        n < vol * 0.85,
-                        if n < vol * 0.45 { 4 } else { 2 },
-                        [" ", " ", "░", "▒", "▓"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Interference => {
-                    let line1 = (x * 0.18 + norm_y * 0.45 + dynamic_time * 2.5).sin().abs();
-                    let line2 = (x * 0.18 - norm_y * 0.45 - dynamic_time * 1.8).cos().abs();
-                    let val = (line1 * line2) * vol;
-                    let color = interpolate_color(theme.accent_dim, theme.critical, val.min(1.0));
-                    (
-                        val > 0.3,
-                        if val > 0.75 { 4 } else { 2 },
-                        [" ", "·", "+", "#", "■"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Orbit => {
-                    let a1 = dynamic_time * 3.5;
-                    let a2 = dynamic_time * -2.5;
-                    let r = 0.28 * vol;
-                    let p1_x = 0.5 + a1.cos() * r * 1.6;
-                    let p1_y = 0.5 + a1.sin() * r;
-                    let p2_x = 0.5 + a2.cos() * r * 2.0;
-                    let p2_y = 0.5 + a2.sin() * r * 0.9;
-                    let d1 = ((norm_x - p1_x).powi(2) * 3.5 + (norm_y - p1_y).powi(2)).sqrt();
-                    let d2 = ((norm_x - p2_x).powi(2) * 3.5 + (norm_y - p2_y).powi(2)).sqrt();
-                    let color = interpolate_color(theme.accent, theme.critical, (a1.sin() * 0.5 + 0.5).abs());
-                    (
-                        d1 < 0.18 || d2 < 0.18,
-                        if d1 < 0.06 || d2 < 0.06 { 4 } else { 2 },
-                        [" ", " ", "·", "o", "O"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Particles => {
-                    let row_y = (norm_y * 10.0).floor();
-                    let speed = (row_y * 0.6 + 2.5) * (1.1 + vol);
-                    let p = ((x - dynamic_time * speed) % (width as f64)).abs();
-                    let color = interpolate_color(theme.dim, theme.accent, (p / 3.5).min(1.0));
-                    (
-                        p < 3.5 * vol,
-                        if p < 1.2 * vol { 4 } else { 2 },
-                        [" ", " ", " ", "·", "•"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::BarsDot => {
-                    let h = ((x * 0.5 + dynamic_time * 1.8).cos().abs()) * vol * envelope;
+                VisualizerMode::BarDot => {
+                    let bin_idx = (norm_x * (dsp.bins.len() as f64 / 4.0)) as usize;
+                    let h = (dsp.bins.get(bin_idx).cloned().unwrap_or(0.0) as f64 * 2.0 * vol).min(1.0);
                     let dist = (norm_y - h).abs();
-                    let color = interpolate_color(theme.accent, theme.fg, (1.0 - dist / 0.06).max(0.0));
-                    (dist < 0.06, 4, [" ", " ", "·", "•", "●"], Some(color))
+                    let color = interpolate_color(theme.accent, theme.fg, (1.0 - dist / 0.1).max(0.0));
+                    (dist < 0.1, 4, [" ", " ", "·", "•", "●"], Some(color))
                 }
                 VisualizerMode::Rain => {
-                    let drop = (x * 123.456 + dynamic_time * 6.0) % 1.6;
+                    let bin_idx = (norm_x * (dsp.bins.len() as f64 / 8.0)) as usize;
+                    let energy = dsp.bins.get(bin_idx).cloned().unwrap_or(0.0) as f64;
+                    let drop = (x * 123.456 + time * (2.0 + energy * 10.0)) % 1.6;
                     let dist = ((1.0 - norm_y) - drop).abs();
                     let color = interpolate_color(theme.bg, theme.accent_dim, (1.0 - dist / 0.12).min(1.0));
                     (dist < 0.12, 3, [" ", " ", "·", "│", "┃"], Some(color))
                 }
-                VisualizerMode::BarsOutline => {
-                    let h = ((x * 0.35 + dynamic_time * 1.2).sin().abs()) * vol * envelope;
-                    let dist = (norm_y - h).abs();
-                    let color = interpolate_color(theme.accent_dim, theme.accent, 1.0 - (dist / 0.12).min(1.0));
-                    (dist < 0.12, 4, [" ", " ", "┌", "┐", "█"], Some(color))
-                }
-                VisualizerMode::Bricks => {
-                    let cx = (norm_x * 18.0).floor();
-                    let cy = (norm_y * 9.0).floor();
-                    let v = ((cx * 0.55 + dynamic_time).sin() * (cy * 0.55).cos()).abs() * vol;
-                    let color = interpolate_color(theme.dim, theme.critical, v.min(1.0));
-                    (v > 0.35, 4, [" ", " ", "▞", "▚", "■"], Some(color))
-                }
-                VisualizerMode::Columns => {
-                    let cx = (norm_x * 24.0).floor();
-                    let h = ((cx * 0.75 + dynamic_time).cos().abs()) * vol;
-                    let color = interpolate_color(theme.accent, theme.dim, (norm_y / h.max(0.1)).min(1.0));
-                    (norm_y < h, 4, [" ", " ", " ", " ", "┃"], Some(color))
-                }
-                VisualizerMode::ClassicPeak => {
-                    let h = ((x * 0.25 + dynamic_time).sin() * 0.5 + 0.5) * vol;
-                    let is_peak = (norm_y - h).abs() < 0.06;
-                    let color = if is_peak { theme.critical } else { theme.accent_dim };
-                    (
-                        is_peak || (norm_y < h * 0.25),
-                        4,
-                        [" ", " ", " ", " ", "▔"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Scatter => {
-                    let n = (x * 88.8 + norm_y * 99.9 + dynamic_time * 12.0).sin().abs();
-                    let is_active = n > (1.25 - vol * 0.55);
-                    let color = interpolate_color(theme.dim, theme.accent, n.min(1.0));
-                    (is_active, 4, [" ", " ", " ", " ", "·"], Some(color))
-                }
-                VisualizerMode::Flame => {
-                    let f = ((x * 0.12).sin() + (dynamic_time * 6.0)).cos().abs() * vol * (1.1 - norm_y);
-                    let color = interpolate_color(theme.critical, theme.accent, (norm_y / f.max(0.1)).min(1.0));
-                    (norm_y < f, 4, [" ", " ", "░", "▒", "▓"], Some(color))
-                }
                 VisualizerMode::Retro => {
-                    let v = ((x * 0.12 + dynamic_time).sin() * 6.0 + (norm_y * 6.0)).floor() % 2.0;
-                    let color = interpolate_color(theme.critical, theme.accent, norm_x);
-                    (v == 0.0 && vol > 0.35, 4, [" ", " ", " ", " ", "〓"], Some(color))
-                }
-                VisualizerMode::Binary => {
-                    let b = ((x * 12.0 + norm_y * 12.0 + dynamic_time * 6.0).sin().abs() > 0.5) as usize;
-                    let color = if b == 1 { theme.accent } else { theme.accent_dim };
-                    (
-                        vol > 0.45 && (i % 3 == 0),
-                        3 + b,
-                        [" ", " ", " ", "0", "1"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Sakura => {
-                    let drift = (x * 0.12 + dynamic_time * 0.8 + norm_y).sin().abs();
-                    let color = interpolate_color(theme.accent_dim, theme.fg, drift);
-                    (drift > 0.88 && vol > 0.25, 4, [" ", " ", " ", " ", "∗"], Some(color))
-                }
-                VisualizerMode::Firework => {
-                    let p = (dynamic_time * 2.2).fract();
-                    let dx = (norm_x - 0.5).abs();
-                    let dy = (norm_y - p).abs();
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    let is_active = dist < 0.12 * vol * p;
-                    let color = interpolate_color(theme.critical, theme.accent, p);
-                    (is_active, 4, [" ", " ", " ", " ", "×"], Some(color))
-                }
-                VisualizerMode::Bubbles => {
-                    let bx = (x * 0.55 + dynamic_time * 1.2).cos().abs();
-                    let dist = (norm_y - bx).abs();
-                    let color = interpolate_color(theme.dim, theme.accent_dim, (1.0 - dist / 0.12).min(1.0));
-                    (dist < 0.12 * vol, 4, [" ", " ", " ", " ", "○"], Some(color))
-                }
-                VisualizerMode::Logo => (
-                    (norm_x - 0.5).abs() < 0.22 && (norm_y - 0.5).abs() < 0.22 * vol,
-                    4,
-                    [" ", " ", " ", " ", "#"],
-                    None,
-                ),
-                VisualizerMode::Terrain => {
-                    let h = ((x * 0.12 + dynamic_time).sin() * (x * 0.22 - dynamic_time).cos()).abs() * vol;
-                    let color = interpolate_color(theme.dim, theme.accent, (norm_y / h.max(0.1)).min(1.0));
-                    (norm_y < h, 4, [" ", " ", " ", " ", "▴"], Some(color))
+                    // Use Chromagram for Retro colors
+                    let chroma_idx = (norm_x * 12.0) as usize % 12;
+                    let chroma_val = dsp.chromagram[chroma_idx] as f64;
+                    let v = ((x * 0.12 + time).sin() * 6.0 + (norm_y * 6.0)).floor() % 2.0;
+                    let color = interpolate_color(theme.critical, theme.accent, chroma_val);
+                    (v == 0.0 && chroma_val > 0.3 * beat_warp, 4, [" ", " ", " ", " ", "〓"], Some(color))
                 }
                 VisualizerMode::Glitch => {
-                    let g = (dynamic_time * 25.0).sin() > 0.96;
-                    let glitch_color = if (dynamic_time * 50.0).cos() > 0.0 { theme.accent } else { theme.critical };
+                    let bin_idx = (norm_x * (dsp.bins.len() as f64 / 2.0)) as usize;
+                    let energy = dsp.bins.get(bin_idx).cloned().unwrap_or(0.0) as f64;
+                    let g = (time * 25.0 + energy * 50.0).sin() > 0.96;
+                    let glitch_color = if (time * 50.0).cos() > 0.0 { theme.accent } else { theme.critical };
                     (g && vol > 0.25, 4, [" ", " ", " ", " ", "▙"], Some(glitch_color))
                 }
-                VisualizerMode::Scope => {
-                    let s = ((x * 0.55 - dynamic_time * 12.0).sin() * 0.45 * vol) + 0.5;
-                    let color = interpolate_color(theme.accent, theme.fg, (dynamic_time * 2.0).sin().abs());
-                    ((norm_y - s).abs() < 0.06, 4, [" ", " ", " ", " ", "─"], Some(color))
-                }
-                VisualizerMode::Heartbeat => {
-                    let beat = (dynamic_time * 4.5).sin().powi(12);
-                    let h = 0.5 + beat * 0.45 * vol;
-                    let color = interpolate_color(theme.critical, theme.fg, beat.min(1.0));
+                VisualizerMode::Noise => {
+                    let n = (x * 1.8 + norm_y * 1.8 + time * 30.0).sin().abs();
+                    let color = interpolate_color(theme.bg, theme.dim, n * amplitude * 10.0);
                     (
-                        (norm_y - h).abs() < 0.12 && (norm_x - 0.5).abs() < 0.12,
-                        4,
-                        [" ", " ", " ", " ", "■"],
-                        Some(color),
-                    )
-                }
-                VisualizerMode::Butterfly => {
-                    let wing = (x * 0.12 + dynamic_time * 1.5).sin() * (norm_y - 0.5);
-                    let color = interpolate_color(theme.critical, theme.accent, norm_x);
-                    (wing.abs() < 0.12 * vol, 4, [" ", " ", " ", " ", "∞"], Some(color))
-                }
-                VisualizerMode::Lightning => {
-                    let l = (dynamic_time * 12.0).sin() > 0.985;
-                    let color = theme.fg;
-                    (
-                        l && (norm_x - 0.5).abs() < 0.06 * vol,
-                        4,
-                        [" ", " ", " ", " ", "ϟ"],
+                        n < vol * 0.85,
+                        if n < vol * 0.45 { 4 } else { 2 },
+                        [" ", " ", "░", "▒", "▓"],
                         Some(color),
                     )
                 }
@@ -419,7 +181,7 @@ pub fn render_visualizer(
                     };
                 }
             } else {
-                let glow = (norm_x * 12.0 + dynamic_time).sin().abs() * (norm_y * 6.0).cos().abs();
+                let glow = (norm_x * 12.0 + time).sin().abs() * (norm_y * 6.0).cos().abs();
                 if glow > 0.992 {
                     final_idx = 1;
                     color = theme.status_bg;

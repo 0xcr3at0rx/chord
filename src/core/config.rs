@@ -115,7 +115,7 @@ impl Default for AudioConfig {
             device_name: None,
             volume: 1.0,
             mode: "PIPEWIRE".to_string(),
-            visualizer: crate::core::visualizer::VisualizerMode::Bars,
+            visualizer: crate::core::visualizer::VisualizerMode::Bar,
             sample_rate: 48000,
             buffer_ms: 100,
             resample_quality: 4,

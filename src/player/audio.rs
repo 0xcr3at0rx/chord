@@ -120,6 +120,9 @@ impl<R: Read> Seek for StreamingReader<R> {
     }
 }
 
+use crate::core::dsp::{AudioAnalyzer, DspState};
+use crossbeam_channel as channel;
+
 fn suppress_alsa_errors() {
     // Disabled C-variadic FFI as it is unstable.
 }
@@ -130,15 +133,16 @@ pub struct LyricLine {
     pub text: String,
 }
 
-struct AmplitudeTracker<S>
+struct VisualizerTracker<S>
 where
     S: rodio::Source<Item = f32>,
 {
     inner: S,
+    sample_tx: channel::Sender<f32>,
     amplitude: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
-impl<S> rodio::Source for AmplitudeTracker<S>
+impl<S> rodio::Source for VisualizerTracker<S>
 where
     S: rodio::Source<Item = f32>,
 {
@@ -156,7 +160,7 @@ where
     }
 }
 
-impl<S> Iterator for AmplitudeTracker<S>
+impl<S> Iterator for VisualizerTracker<S>
 where
     S: rodio::Source<Item = f32>,
 {
@@ -166,10 +170,13 @@ where
         let sample = self.inner.next()?;
         let val = sample.abs();
 
-        // Simple exponential moving average for smoothing
+        // Send sample to analyzer
+        let _ = self.sample_tx.try_send(sample);
+
+        // Simple exponential moving average for smoothing (legacy support)
         let current_bits = self.amplitude.load(std::sync::atomic::Ordering::Relaxed);
         let current = f32::from_bits(current_bits);
-        let new_val = current * 0.85 + val * 0.15; // More responsive visuals
+        let new_val = current * 0.85 + val * 0.15;
         self.amplitude
             .store(new_val.to_bits(), std::sync::atomic::Ordering::Relaxed);
 
@@ -201,6 +208,7 @@ pub struct AudioPlayer {
     pub mode: std::sync::Arc<std::sync::Mutex<String>>,
     pub last_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     pub amplitude: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    pub dsp_state: std::sync::Arc<std::sync::RwLock<DspState>>,
 }
 
 struct AudioBackend {
@@ -219,12 +227,15 @@ struct AudioBackend {
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     amplitude_shared: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    sample_tx: channel::Sender<f32>,
 }
 
 impl AudioPlayer {
     pub fn new() -> Self {
         suppress_alsa_errors();
         let (tx, rx) = mpsc::channel();
+        let (sample_tx, sample_rx) = channel::bounded(10000);
+        
         let device_name = std::sync::Arc::new(std::sync::Mutex::new(None));
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -232,6 +243,9 @@ impl AudioPlayer {
         let mode = std::sync::Arc::new(std::sync::Mutex::new("PIPEWIRE".into()));
         let last_error = std::sync::Arc::new(std::sync::Mutex::new(None));
         let amplitude = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
+        
+        let mut analyzer = AudioAnalyzer::new();
+        let dsp_state = analyzer.state.clone();
 
         let backend_name = device_name.clone();
         let backend_empty = is_empty.clone();
@@ -241,6 +255,21 @@ impl AudioPlayer {
         let backend_amplitude = amplitude.clone();
         let backend_tx = tx.clone();
 
+        // Start Analyzer thread
+        std::thread::spawn(move || {
+            let mut samples_buf = Vec::with_capacity(2048);
+            loop {
+                while let Ok(sample) = sample_rx.recv_timeout(Duration::from_millis(10)) {
+                    samples_buf.push(sample);
+                    if samples_buf.len() >= 2048 {
+                        analyzer.process_samples(&samples_buf);
+                        samples_buf.clear();
+                    }
+                }
+            }
+        });
+
+        let backend_sample_tx_clone = sample_tx.clone();
         std::thread::spawn(move || {
             let mut backend = AudioBackend {
                 stream: None,
@@ -258,6 +287,7 @@ impl AudioPlayer {
                 is_initializing_shared: backend_init,
                 last_error_shared: backend_last_err,
                 amplitude_shared: backend_amplitude,
+                sample_tx: backend_sample_tx_clone,
             };
 
             let _ = backend.try_init(false);
@@ -307,6 +337,8 @@ impl AudioPlayer {
                         let has_error_shared = backend.has_error_shared.clone();
                         let amplitude_shared_thread = backend.amplitude_shared.clone();
 
+                        let sample_tx_clone = backend.sample_tx.clone();
+
                         std::thread::spawn(move || {
                             if let Some(handle) = handle_shared {
                                 let res = (|| -> Result<Sink, String> {
@@ -329,7 +361,11 @@ impl AudioPlayer {
                                     let reader = StreamingReader::new(response);
                                     let source = Decoder::new(reader).map_err(|e| format!("Decoder: {}", e))?;
                                     let source = rodio::Source::convert_samples::<f32>(source);
-                                    let source = AmplitudeTracker { inner: source, amplitude: amplitude_shared_thread };
+                                    let source = VisualizerTracker { 
+                                        inner: source, 
+                                        amplitude: amplitude_shared_thread,
+                                        sample_tx: sample_tx_clone,
+                                    };
                                     let sink = Sink::try_new(&handle).map_err(|e| format!("Sink: {}", e))?;
                                     sink.set_volume(volume);
                                     sink.append(source);
@@ -425,6 +461,7 @@ impl AudioPlayer {
             mode,
             last_error,
             amplitude,
+            dsp_state,
         }
     }
 
@@ -586,9 +623,10 @@ impl AudioBackend {
                 let file = File::open(&path).map_err(|e| e.to_string())?;
                 let source = Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?;
                 let source = rodio::Source::convert_samples::<f32>(source);
-                let source = AmplitudeTracker {
+                let source = VisualizerTracker {
                     inner: source,
                     amplitude: self.amplitude_shared.clone(),
+                    sample_tx: self.sample_tx.clone(),
                 };
 
                 match Sink::try_new(handle) {

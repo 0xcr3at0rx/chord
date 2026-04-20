@@ -460,13 +460,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let vis_height = vis_area.height;
 
             let visualizer_mode = app.settings.config.read().unwrap().audio.visualizer;
-            let real_vol = app.audio.get_amplitude() as f64;
+            let dsp_state = app.audio.dsp_state.read().unwrap();
             let vis_lines = render_visualizer(
                 app.is_playing,
                 vis_width,
                 vis_height,
                 (app.audio_clock * 100.0) as u64,
-                real_vol,
+                &dsp_state,
                 &app.theme,
                 visualizer_mode,
             );

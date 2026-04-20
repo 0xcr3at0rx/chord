@@ -41,4 +41,3 @@ pub const KEY_LIST_DOWN: KeyCode = KeyCode::Down;
 pub const KEY_LIST_UP_VIM: KeyCode = KeyCode::Char('k');
 pub const KEY_LIST_DOWN_VIM: KeyCode = KeyCode::Char('j');
 pub const KEY_CONFIRM: KeyCode = KeyCode::Enter;
-pub const KEY_BACK: KeyCode = KeyCode::Esc;

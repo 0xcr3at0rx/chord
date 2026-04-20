@@ -94,15 +94,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> C
                         }
                     }
 
-                    if key.code == KEY_BACK {
-                        app.input_mode = if app.input_mode == InputMode::Search {
-                            app.previous_mode
-                        } else {
-                            InputMode::Offline
-                        };
-                        continue;
-                    }
-
                     match app.input_mode {
                         InputMode::Offline => {
                             match key.code {

@@ -5,17 +5,6 @@
 <img align="right" width="300" src="images/screenshot1.png" alt="Chord TUI Screenshot 1">
 <img align="right" width="300" src="images/screenshot2.png" alt="Chord TUI Screenshot 2">
 
-## Key Features
-
-- **Local Playback**: High-performance playback for FLAC, MP3, WAV, OGG, and more.
-- **Audiophile Grade**: Support for high-res output (up to 192kHz), adjustable buffers, and bit-depth control.
-- **Ultra-High Fidelity Visualizer**: Real-time **8x resolution** Wave visualizer using Braille high-density rendering and GPU-style shader math (SDFs).
-- **Radio Mode**: Stream curated online radio stations (Ctrl+R).
-- **Dynamic Deep-Space Layer**: Subtle parallax starfield background for a cinematic experience.
-- **Custom Themes**: Full hex-code support for total personalization.
-
-<br clear="right"/>
-
 ## How it works
 
 Just run the `chord` command. The app will automatically scan your `music_dir` for files, update its local cache, and open the TUI player for you to browse and play your music.

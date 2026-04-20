@@ -499,8 +499,8 @@ impl App {
         // Update audio clock for visualizer (only when playing)
         if self.is_playing {
             let amp = self.audio.get_amplitude() as f64;
-            // Base speed + energy-based modulation
-            let speed = 0.05 + (amp * 2.0);
+            // Slower base speed and more subtle modulation
+            let speed = 0.01 + (amp * 0.4);
             self.audio_clock += speed;
         }
 

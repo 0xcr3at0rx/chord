@@ -262,8 +262,16 @@ impl AudioPlayer {
                 while let Ok(sample) = sample_rx.recv_timeout(Duration::from_millis(10)) {
                     samples_buf.push(sample);
                     if samples_buf.len() >= 2048 {
+                        // Sliding window: process current buffer
                         analyzer.process_samples(&samples_buf);
-                        samples_buf.clear();
+                        
+                        // Shift buffer by HOP_SIZE (512)
+                        let hop = 512;
+                        if samples_buf.len() > hop {
+                            samples_buf.drain(0..hop);
+                        } else {
+                            samples_buf.clear();
+                        }
                     }
                 }
             }

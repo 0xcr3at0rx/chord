@@ -6,7 +6,7 @@ import concurrent.futures
 import urllib.request
 import urllib.error
 
-SOURCE_DIR = "/home/drack/tmp/script/m3u-radio-music-playlists"
+SOURCE_DIR = ""
 OUTPUT_FILE = "radio.toml"
 # Set to True to verify if streams are alive (slow for large lists)
 CHECK_LIVENESS = False 

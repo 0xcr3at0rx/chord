@@ -3,7 +3,7 @@ import os
 import re
 import glob
 
-SOURCE_DIR = "/home/drack/tmp/script/m3u-radio-music-playlists"
+SOURCE_DIR = ""
 
 def parse_m3u(file_path):
     stations = []

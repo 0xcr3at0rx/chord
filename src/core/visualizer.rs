@@ -83,10 +83,10 @@ pub fn render_visualizer(
         return lines;
     }
 
-    let time = seed as f64 / 250.0; // Slower, smoother time
+    let time = seed as f64 / 450.0; // Extremely smooth
     let amplitude = dsp.amplitude as f64;
-    let vol = (amplitude * 20.0).clamp(0.05, 4.0);
-    let beat_warp = if dsp.is_beat { 1.15 } else { 1.0 };
+    let vol = (amplitude * 18.0).clamp(0.05, 4.0);
+    let beat_warp = if dsp.is_beat { 1.1 } else { 1.0 };
 
     for y_row in 0..height {
         let mut spans = Vec::new();
@@ -102,21 +102,26 @@ pub fn render_visualizer(
                 VisualizerMode::Wave => {
                     let sample_idx = (norm_x * (dsp.waveform.len() as f64 - 1.0)) as usize;
                     let sample = dsp.waveform.get(sample_idx).cloned().unwrap_or(0.0) as f64;
-                    let wave = sample * 0.7 * vol + mid_y;
+                    let wave = sample * 0.65 * vol + mid_y;
                     let dist = (norm_y - wave).abs();
-                    let hue_shift = (time * 0.3 + norm_x).sin() * 0.5 + 0.5;
+                    let hue_shift = (time * 0.2 + norm_x).sin() * 0.5 + 0.5;
                     let color = interpolate_color(theme.accent, theme.critical, hue_shift);
+                    
+                    let idx = if dist < 0.01 * vol { 4 } 
+                             else if dist < 0.02 * vol { 3 }
+                             else if dist < 0.04 * vol { 2 }
+                             else { 1 };
                     (
-                        dist < 0.04 * vol,
-                        if dist < 0.015 * vol { 4 } else { 2 },
+                        dist < 0.06 * vol,
+                        idx,
                         [" ", "·", "≈", "≋", "█"],
                         Some(color),
                     )
                 }
                 VisualizerMode::Bar => {
                     let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                    let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 4.0 * vol).min(1.0);
-                    let peak = (dsp.peaks.get(band_idx).cloned().unwrap_or(0.0) as f64 * 4.0 * vol).min(1.0);
+                    let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.5 * vol).min(1.0);
+                    let peak = (dsp.peaks.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.5 * vol).min(1.0);
                     
                     let is_peak = (norm_y - peak).abs() < 0.03;
                     let color = if is_peak {
@@ -125,49 +130,74 @@ pub fn render_visualizer(
                         interpolate_color(theme.accent_dim, theme.accent, (norm_y / h.max(0.1)).min(1.0))
                     };
                     
+                    let fill_idx = if h - norm_y < 0.05 { 2 } else if h - norm_y < 0.15 { 3 } else { 4 };
+                    
                     (
                         norm_y < h || is_peak,
-                        if is_peak { 4 } else if h - norm_y > 0.15 { 4 } else { 2 },
+                        if is_peak { 4 } else { fill_idx },
                         [" ", " ", "▄", "▆", "█"],
                         Some(color),
                     )
                 }
                 VisualizerMode::BarDot => {
                     let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                    let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 4.5 * vol).min(1.0);
+                    let h = (dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 4.0 * vol).min(1.0);
                     let dist = (norm_y - h).abs();
-                    let color = interpolate_color(theme.accent, theme.fg, (1.0 - dist / 0.12).max(0.0));
-                    (dist < 0.08, 4, [" ", " ", "·", "•", "●"], Some(color))
+                    let color = interpolate_color(theme.accent, theme.fg, (1.0 - dist / 0.15).max(0.0));
+                    
+                    let idx = if dist < 0.02 { 4 }
+                             else if dist < 0.05 { 3 }
+                             else if dist < 0.08 { 2 }
+                             else { 1 };
+                    (dist < 0.1, idx, [" ", "·", "•", "●", "⬤"], Some(color))
                 }
                 VisualizerMode::Rain => {
                     let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
                     let energy = dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64;
-                    let drop = (x * 123.456 + time * (1.5 + energy * 8.0)) % 1.6;
-                    let dist = ((1.0 - norm_y) - drop).abs();
-                    let color = interpolate_color(theme.bg, theme.accent_dim, (1.0 - dist / 0.15).min(1.0));
-                    (dist < 0.12, 3, [" ", " ", "·", "│", "┃"], Some(color))
+                    
+                    let speed = 1.0 + energy * 4.0;
+                    let drop_pos = (time * speed + (x * 0.33)) % 1.2; 
+                    let dist = (norm_y - (1.0 - drop_pos)).abs();
+                    
+                    let color = interpolate_color(theme.bg, theme.accent, (1.0 - dist / 0.2).clamp(0.0, 1.0));
+                    
+                    let idx = if dist < 0.03 { 4 } 
+                             else if dist < 0.08 { 3 } 
+                             else if dist < 0.15 { 2 } 
+                             else { 1 };
+                    
+                    (dist < 0.2 && energy > 0.05, idx, [" ", "·", "│", "┃", "╽"], Some(color))
                 }
                 VisualizerMode::Retro => {
                     let chroma_idx = (norm_x * 12.0) as usize % 12;
                     let chroma_val = dsp.chromagram[chroma_idx] as f64;
-                    let v = ((x * 0.08 + time * 0.5).sin() * 5.0 + (norm_y * 5.0)).floor() % 2.0;
+                    let v = ((x * 0.05 + time * 0.3).sin() * 4.0 + (norm_y * 4.0)).floor() % 2.0;
                     let color = interpolate_color(theme.critical, theme.accent, chroma_val);
-                    (v == 0.0 && chroma_val > 0.25 * beat_warp, 4, [" ", " ", " ", " ", "〓"], Some(color))
+                    
+                    let idx = if chroma_val > 0.8 { 4 }
+                             else if chroma_val > 0.6 { 3 }
+                             else { 2 };
+                    
+                    (v == 0.0 && chroma_val > 0.2 * beat_warp, idx, [" ", " ", "░", "▒", "█"], Some(color))
                 }
                 VisualizerMode::Glitch => {
                     let band_idx = (norm_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
                     let energy = dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64;
-                    let g = (time * 15.0 + energy * 40.0).sin() > 0.97;
-                    let glitch_color = if (time * 30.0).cos() > 0.0 { theme.accent } else { theme.critical };
-                    (g && vol > 0.3, 4, [" ", " ", " ", " ", "▙"], Some(glitch_color))
+                    let g = (time * 10.0 + energy * 30.0 + x).sin() > 0.98;
+                    let glitch_color = if (time * 20.0).cos() > 0.0 { theme.accent } else { theme.critical };
+                    
+                    let idx = ((time * 10.0 + x).cos().abs() * 4.0) as usize;
+                    (g && vol > 0.3, idx.clamp(1, 4), [" ", "▖", "▗", "▘", "▙"], Some(glitch_color))
                 }
                 VisualizerMode::Noise => {
-                    let n = (x * 1.5 + norm_y * 1.5 + time * 20.0).sin().abs();
-                    let color = interpolate_color(theme.bg, theme.dim, n * amplitude * 8.0);
+                    let n = (x * 1.2 + norm_y * 1.2 + time * 15.0).sin().abs();
+                    let color = interpolate_color(theme.bg, theme.dim, n * amplitude * 6.0);
+                    
+                    let idx = (n * 4.0) as usize;
                     (
-                        n < vol * 0.8,
-                        if n < vol * 0.4 { 4 } else { 2 },
-                        [" ", " ", "░", "▒", "▓"],
+                        n < vol * 0.75,
+                        idx.clamp(1, 4),
+                        [" ", "░", "▒", "▓", "█"],
                         Some(color),
                     )
                 }

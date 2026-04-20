@@ -5,29 +5,8 @@ use crate::core::dsp::DspState;
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize, Default)]
 pub enum VisualizerMode {
     #[default]
-    Bar,
-    BarDot,
-    Rain,
     Wave,
-    Retro,
-    Glitch,
-    Noise,
     None,
-}
-
-impl VisualizerMode {
-    pub fn next(&self) -> Self {
-        match self {
-            Self::Bar => Self::BarDot,
-            Self::BarDot => Self::Rain,
-            Self::Rain => Self::Wave,
-            Self::Wave => Self::Retro,
-            Self::Retro => Self::Glitch,
-            Self::Glitch => Self::Noise,
-            Self::Noise => Self::None,
-            Self::None => Self::Bar,
-        }
-    }
 }
 
 pub struct Visualizer<'a> {
@@ -52,10 +31,10 @@ impl<'a> Visualizer<'a> {
             return lines;
         }
 
-        let time = self.time * 0.08; 
+        let time = self.time * 0.05; // Even slower for elegance
         let amplitude = self.dsp.amplitude as f64;
-        let vol = (amplitude * 14.0).clamp(0.05, 4.0);
-        let beat_pulse = if self.dsp.is_beat { 1.1 } else { 1.0 };
+        let vol = (amplitude * 15.0).clamp(0.05, 5.0);
+        let beat_pulse = if self.dsp.is_beat { 1.15 } else { 1.0 };
 
         let get_braille = |grid: [[bool; 2]; 4]| -> char {
             let mut code = 0;
@@ -82,69 +61,37 @@ impl<'a> Visualizer<'a> {
                 let mut active_count = 0;
                 let mut avg_hue = 0.0;
 
-                // Background Starfield
-                let star_speed = time * 0.2;
-                let star_noise = (norm_x * 50.0 + star_speed).sin() * (norm_y * 30.0).cos();
-                let is_star = star_noise > 0.998;
+                // Background Depth Layer (Starfield)
+                let star_noise = (norm_x * 60.0 + time * 0.1).sin() * (norm_y * 40.0).cos();
+                let is_star = star_noise > 0.9985;
 
                 for sy in 0..4 {
                     for sx in 0..2 {
                         let sub_x = norm_x + (sx as f64 / (width as f64 * 2.0));
                         let sub_y = norm_y + (sy as f64 / (height as f64 * 4.0));
                         
-                        let (active, hue) = match mode {
-                            VisualizerMode::Wave => {
-                                let sample_idx = (sub_x * (self.dsp.waveform.len() as f64 - 1.0)) as usize;
-                                let sample = self.dsp.waveform.get(sample_idx).cloned().unwrap_or(0.0) as f64;
-                                let wave1 = sample * 0.45 * vol + 0.5;
-                                let wave2 = (sample * 0.2).sin() * 0.3 * vol + 0.5;
-                                let d = (sub_y - wave1).abs().min((sub_y - wave2).abs());
-                                (d < 0.015 * vol, (time * 0.15 + sub_x).sin() * 0.5 + 0.5)
-                            }
-                            VisualizerMode::Bar => {
-                                let band_idx = (sub_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                                let h = (self.dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.8 * vol).min(1.0);
-                                let peak = (self.dsp.peaks.get(band_idx).cloned().unwrap_or(0.0) as f64 * 3.8 * vol).min(1.0);
-                                let is_peak = (sub_y - peak).abs() < 0.008;
-                                let glow = if sub_y >= h { (h - sub_y).abs() < 0.03 } else { false };
-                                (sub_y < h || is_peak || glow, sub_y / h.max(0.1))
-                            }
-                            VisualizerMode::BarDot => {
-                                let band_idx = (sub_x * (crate::core::dsp::NUM_BANDS as f64 - 1.0)) as usize;
-                                let h = (self.dsp.bands.get(band_idx).cloned().unwrap_or(0.0) as f64 * 4.2 * vol).min(1.0);
-                                let d = (sub_y - h).abs();
-                                (d < 0.012 * vol, sub_x)
-                            }
-                            VisualizerMode::Rain => {
-                                let wind = (time * 0.1).sin() * 0.1;
-                                let col_x = (sub_x + sub_y * wind).fract();
-                                let speed = 0.3 + (col_x * 13.37).fract() * 0.4;
-                                let drop_cycle = (time * speed + (col_x * 0.5)) % 1.5;
-                                let head_y = 1.3 - drop_cycle;
-                                let dist = (sub_y - head_y).abs();
-                                let is_splash = sub_y < 0.04 && head_y < 0.04;
-                                (sub_y <= head_y && dist < 0.4 || is_splash, 1.0 - dist / 0.5)
-                            }
-                            VisualizerMode::Retro => {
-                                let persp_y = 1.0 / (sub_y + 0.1);
-                                let grid_x = (sub_x - 0.5) * persp_y;
-                                let grid_z = persp_y + time * 5.0;
-                                let lines = (grid_x * 10.0).sin().abs() < 0.05 || (grid_z * 2.0).sin().abs() < 0.05;
-                                let sun = ((sub_x - 0.5).powi(2) + (sub_y - 0.7).powi(2)).sqrt() < 0.2 * beat_pulse;
-                                (lines && sub_y < 0.4 || sun, if sun { sub_y } else { sub_x })
-                            }
-                            VisualizerMode::Glitch => {
-                                let noise = (sub_x * 20.0).floor() * 1.5 + (sub_y * 10.0).floor() * 1.2 + time * 10.0;
-                                (noise.sin().abs() > 0.992, sub_x)
-                            }
-                            VisualizerMode::Noise => {
-                                let n = (sub_x * 8.0 + time).sin() * (sub_y * 8.0 - time).cos();
-                                (n.abs() < vol * 0.35, n.abs())
-                            }
-                            _ => (false, 0.0),
-                        };
+                        // Advanced Wave Shader
+                        // Combines Time-Domain Waveform with multiple oscillators
+                        let sample_idx = (sub_x * (self.dsp.waveform.len() as f64 - 1.0)) as usize;
+                        let raw_sample = self.dsp.waveform.get(sample_idx).cloned().unwrap_or(0.0) as f64;
+                        
+                        // Primary Oscilloscope Line
+                        let wave_main = raw_sample * 0.4 * vol * beat_pulse + 0.5;
+                        
+                        // Secondary Harmonic Glow
+                        let wave_harm = (sub_x * 10.0 + time).sin() * 0.1 * vol + wave_main;
+                        
+                        // Tertiary Deep Pulse
+                        let wave_base = (sub_x * 3.0 - time * 0.5).cos() * 0.05 * vol + 0.5;
 
-                        if active {
+                        let dist_main = (sub_y - wave_main).abs();
+                        let dist_harm = (sub_y - wave_harm).abs();
+                        let dist_base = (sub_y - wave_base).abs();
+
+                        let is_wave = dist_main < 0.012 * vol || dist_harm < 0.02 * vol || dist_base < 0.01 * vol;
+                        let hue = (sub_x + time * 0.2).sin() * 0.5 + 0.5;
+
+                        if is_wave {
                             braille_grid[3 - sy][sx] = true;
                             active_count += 1;
                             avg_hue += hue;
@@ -153,18 +100,15 @@ impl<'a> Visualizer<'a> {
                 }
 
                 if active_count > 0 {
-                    let color = match mode {
-                        VisualizerMode::Bar => interpolate_color(self.theme.accent_dim, self.theme.accent, (avg_hue / active_count as f64).min(1.0)),
-                        VisualizerMode::Rain => interpolate_color(self.theme.bg, self.theme.accent, (avg_hue / active_count as f64).clamp(0.0, 1.0)),
-                        VisualizerMode::Retro => interpolate_color(self.theme.critical, self.theme.accent, (avg_hue / active_count as f64).clamp(0.0, 1.0)),
-                        _ => interpolate_color(self.theme.accent, self.theme.critical, (avg_hue / active_count as f64).clamp(0.0, 1.0)),
-                    };
+                    let h = avg_hue / active_count as f64;
+                    let color = interpolate_color(self.theme.accent, self.theme.critical, h.clamp(0.0, 1.0));
                     spans.push(Span::styled(get_braille(braille_grid).to_string(), Style::default().fg(color)));
                 } else if is_star {
                     spans.push(Span::styled(".", Style::default().fg(self.theme.dim)));
                 } else {
-                    let glow = (norm_x * 8.0 + time).sin().abs() * (norm_y * 4.0).cos().abs();
-                    if glow > 0.996 {
+                    // Soft background glow
+                    let glow = (norm_x * 5.0 + time).sin().abs() * (norm_y * 3.0).cos().abs();
+                    if glow > 0.997 {
                         spans.push(Span::styled("·", Style::default().fg(self.theme.status_bg)));
                     } else {
                         spans.push(Span::raw(" "));

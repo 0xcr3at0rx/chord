@@ -3,7 +3,7 @@ use rodio::cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::Duration;
 
@@ -121,7 +121,7 @@ impl<R: Read> Seek for StreamingReader<R> {
 }
 
 use crate::core::dsp::{AudioAnalyzer, DspState};
-use crossbeam_channel as channel;
+use std::sync::mpsc as channel;
 
 fn suppress_alsa_errors() {
     // Disabled C-variadic FFI as it is unstable.
@@ -138,7 +138,7 @@ where
     S: rodio::Source<Item = f32>,
 {
     inner: S,
-    sample_tx: channel::Sender<f32>,
+    sample_tx: channel::SyncSender<f32>,
     amplitude: std::sync::Arc<std::sync::atomic::AtomicU32>,
 }
 
@@ -227,14 +227,14 @@ struct AudioBackend {
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     amplitude_shared: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    sample_tx: channel::Sender<f32>,
+    sample_tx: channel::SyncSender<f32>,
 }
 
 impl AudioPlayer {
     pub fn new() -> Self {
         suppress_alsa_errors();
         let (tx, rx) = mpsc::channel();
-        let (sample_tx, sample_rx) = channel::bounded(10000);
+        let (sample_tx, sample_rx) = channel::sync_channel(10000);
         
         let device_name = std::sync::Arc::new(std::sync::Mutex::new(None));
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
@@ -655,34 +655,4 @@ impl AudioBackend {
 
         Err("Playback failed".into())
     }
-}
-
-#[allow(dead_code)]
-pub fn probe_duration(path: &Path) -> Option<Duration> {
-    use std::fs::File;
-    use symphonia::core::io::MediaSourceStream;
-    use symphonia::default::get_probe;
-
-    if let Ok(file) = File::open(path) {
-        let mss = MediaSourceStream::new(Box::new(file), Default::default());
-        if let Ok(probed) = get_probe().format(
-            &Default::default(),
-            mss,
-            &Default::default(),
-            &Default::default(),
-        ) {
-            let format = probed.format;
-            if let Some(track) = format.tracks().first() {
-                if let Some(n_frames) = track.codec_params.n_frames {
-                    if let Some(tb) = track.codec_params.time_base {
-                        let time = tb.calc_time(n_frames);
-                        return Some(
-                            Duration::from_secs(time.seconds) + Duration::from_secs_f64(time.frac),
-                        );
-                    }
-                }
-            }
-        }
-    }
-    None
 }

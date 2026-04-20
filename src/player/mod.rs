@@ -107,7 +107,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> C
                         InputMode::Offline => {
                             match key.code {
                                 KEY_QUIT => return Ok(()),
-                                KEY_VISUALIZER => app.cycle_visualizer().await,
                                 KEY_TOGGLE_PLAYBACK_1 | KEY_TOGGLE_PLAYBACK_2 => app.toggle_playback().await,
                                 KEY_VOL_UP_1 | KEY_VOL_UP_2 => {
                                     app.volume = (app.volume + 0.05).min(1.0);
@@ -167,7 +166,6 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> C
                         InputMode::Online => {
                             match key.code {
                                 KEY_QUIT => return Ok(()),
-                                KEY_VISUALIZER => app.cycle_visualizer().await,
                                 KEY_TOGGLE_PLAYBACK_1 | KEY_TOGGLE_PLAYBACK_2 => app.toggle_playback().await,
                                 KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => {
                                     let len = app.filtered_stations.len();

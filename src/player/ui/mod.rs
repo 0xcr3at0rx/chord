@@ -546,16 +546,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         Style::default().fg(app.theme.dim),
                     ));
                 }
-
-                let visualizer_mode_label = app.settings.config.read().unwrap().audio.visualizer;
-                tech_spans.push(Span::styled(
-                    " * ",
-                    Style::default().fg(app.theme.status_bg),
-                ));
-                tech_spans.push(Span::styled(
-                    format!("{:?}", visualizer_mode_label).to_uppercase(),
-                    Style::default().fg(app.theme.accent_dim),
-                ));
             }
 
             f.render_widget(

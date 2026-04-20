@@ -430,10 +430,6 @@ impl<'a> App<'a> {
         self.settings.save_config(&config_file).map_err(|e| ChordError::Config(e.to_string()))
     }
 
-    pub async fn save_config_silent(&self) {
-        let _ = self.save_config().await;
-    }
-
     pub async fn update(&mut self) {
         if self.is_playing {
             let amp = self.audio.get_amplitude() as f64;
@@ -621,14 +617,6 @@ impl<'a> App<'a> {
                 self.playback_start = Some(Instant::now());
             }
         }
-    }
-
-    pub async fn cycle_visualizer(&mut self) {
-        if let Ok(mut config) = self.settings.config.write() {
-            config.audio.visualizer = config.audio.visualizer.next();
-        }
-        self.save_config_silent().await;
-        self.needs_redraw = true;
     }
 
     pub fn filter_tracks(&mut self) {

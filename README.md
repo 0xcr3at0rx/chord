@@ -1,13 +1,24 @@
 # Chord
 
-**Chord** is a high-fidelity TUI music player for local audio files and internet radio. It provides a clean, responsive interface for browsing and playing your music library with professional-grade audio options.
+**Chord** is a high-fidelity TUI music player for local audio files and internet radio. It features a minimalist, distraction-free interface designed for audiophiles who value both aesthetics and performance.
 
-<img align="right" width="300" src="images/screenshot1.png" alt="Chord TUI Screenshot 1">
-<img align="right" width="300" src="images/screenshot2.png" alt="Chord TUI Screenshot 2">
+## Preview
+
+<p align="center">
+  <img src="images/screenshot1.png" width="800" alt="Chord TUI Main Interface">
+  <br>
+  <i>The ultra-minimalist "MUSIC" mode with real-time Wave visualizer</i>
+</p>
+
+<p align="center">
+  <img src="images/screenshot2.png" width="800" alt="Chord TUI Radio Mode">
+  <br>
+  <i>"RADIO" mode featuring curated global stations and procedural radio art</i>
+</p>
 
 ## How it works
 
-Just run the `chord` command. The app will automatically scan your `music_dir` for files, update its local cache, and open the TUI player for you to browse and play your music.
+Just run the `chord` command. The app will automatically scan your `music_dir` for files, update its local cache, and open the TUI player. Chord is built with a focus on simplicity—no top bars, no clutter, just your music and a high-density visualizer.
 
 ## Controls
 
@@ -24,7 +35,7 @@ Just run the `chord` command. The app will automatically scan your `music_dir` f
 
 ## Configuration
 
-Settings are managed in `~/.config/chord/config.toml`. Changes to this file take effect on the next startup.
+Settings are managed in `~/.config/chord/config.toml`.
 
 ### High-Fidelity Audio Setup
 ```toml

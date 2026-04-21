@@ -19,7 +19,6 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             artifact_name: chord
             asset_name: chord-linux-aarch64
-            use_cross: true
 
     steps:
       - name: Checkout repository
@@ -37,34 +36,25 @@ jobs:
             # Fix Noble (24.04) sources to be amd64-only to avoid 404s when searching for arm64 on main mirrors
             if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
               sudo sed -i 's/^Architectures: .*/Architectures: amd64/g' /etc/apt/sources.list.d/ubuntu.sources || true
-              # If Architectures line doesn't exist in DEB822 format, we add it to the first section
               if ! grep -q "Architectures: amd64" /etc/apt/sources.list.d/ubuntu.sources; then
                 sudo sed -i 's/Types: deb/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
               fi
             fi
-            # Add ports.ubuntu.com for arm64
             echo -e "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates noble-security\nComponents: main restricted universe multiverse\nArchitectures: arm64" | sudo tee /etc/apt/sources.list.d/arm64.sources
             
             sudo apt-get update
             sudo apt-get install -y libasound2-dev:arm64 gcc-aarch64-linux-gnu pkg-config
             echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
             echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           else
             sudo apt-get update
             sudo apt-get install -y libasound2-dev pkg-config
           fi
 
-      - name: Install cross
-        if: matrix.use_cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
       - name: Build
         run: |
-          if [ "${{ matrix.use_cross }}" == "true" ]; then
-            cross build --release --target ${{ matrix.target }}
-          else
-            cargo build --release --target ${{ matrix.target }}
-          fi
+          cargo build --release --target ${{ matrix.target }}
         shell: bash
 
       - name: Prepare asset

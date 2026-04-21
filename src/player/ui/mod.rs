@@ -23,10 +23,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let main_layout = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(0),
-            Constraint::Length(1),
-        ])
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
         .split(size);
 
     let content_layout = Layout::default()
@@ -68,10 +65,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         } else if effective_mode == InputMode::Online {
             let mut items = Vec::new();
             for station in &app.filtered_stations {
-                let is_playing = app.current_track.as_ref()
+                let is_playing = app
+                    .current_track
+                    .as_ref()
                     .map(|t| t.track_id == "radio" && t.title == station.name)
                     .unwrap_or(false);
-                
+
                 let style = if is_playing {
                     Style::default()
                         .fg(app.theme.accent)
@@ -81,7 +80,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 };
 
                 let indicator = if is_playing {
-                    if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                    if app.is_playing {
+                        " 󰐊 "
+                    } else {
+                        " 󰏤 "
+                    }
                 } else {
                     "   "
                 };
@@ -89,11 +92,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 items.push(ListItem::new(vec![
                     Line::from(vec![
                         Span::styled(indicator, style),
-                        Span::styled(format!("{}", station.name), style),
+                        Span::styled(station.name.to_string(), style),
                     ]),
-                    Line::from(vec![
-                        Span::styled(format!("    {} ", station.country), Style::default().fg(app.theme.dim)),
-                    ]),
+                    Line::from(vec![Span::styled(
+                        format!("    {} ", station.country),
+                        Style::default().fg(app.theme.dim),
+                    )]),
                     Line::from(""),
                 ]));
             }
@@ -133,9 +137,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             }
         } else if app.filtered_tracks.is_empty() {
             let (title, msg) = if !app.search_query.is_empty() {
-                ("  NO RESULTS FOUND  ", format!("  No tracks match '{}'", app.search_query))
+                (
+                    "  NO RESULTS FOUND  ",
+                    format!("  No tracks match '{}'", app.search_query),
+                )
             } else {
-                ("  LIBRARY IS EMPTY  ", "  Add music files and press 'r' to scan.".to_string())
+                (
+                    "  LIBRARY IS EMPTY  ",
+                    "  Add music files and press 'r' to scan.".to_string(),
+                )
             };
 
             let empty_msg = vec![
@@ -195,7 +205,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     };
 
                     let indicator = if is_playing {
-                        if app.is_playing { " 󰐊 " } else { " 󰏤 " }
+                        if app.is_playing {
+                            " 󰐊 "
+                        } else {
+                            " 󰏤 "
+                        }
                     } else {
                         "   "
                     };
@@ -264,35 +278,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .split(dashboard_area);
 
             // --- IMAGE / RADIO / CONFIG ICON PREVIEW ---
-            if is_radio {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_millis() as u64;
-
-                let real_vol = app.audio.get_amplitude() as f64;
-                let art_lines = crate::player::ui::components::render_radio_art(
-                    app.is_playing,
-                    app.is_starting,
-                    20, // width
-                    10, // height
-                    now,
-                    &track.title,
-                    &app.theme,
-                    real_vol,
-                );
-
-                f.render_widget(
-                    Paragraph::new(art_lines)
-                        .alignment(Alignment::Center)
-                        .block(
-                            Block::default()
-                                .borders(Borders::ALL)
-                                .border_style(Style::default().fg(app.theme.status_bg)),
-                        ),
-                    dash_layout[0],
-                );
-            } else if let Some(img) = &app.cached_image {
+            if let Some(img) = &app.cached_image {
                 if app.image_state.is_none() {
                     let mut picker = app
                         .image_picker
@@ -306,10 +292,13 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     f.render_stateful_widget(image, dash_layout[0], state);
                 }
             } else {
-                let placeholder = Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(app.theme.status_bg));
-                f.render_widget(placeholder, dash_layout[0]);
+                // Empty placeholder with theme borders
+                f.render_widget(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .border_style(Style::default().fg(app.theme.status_bg)),
+                    dash_layout[0],
+                );
             }
 
             let dash_chunks = Layout::default()
@@ -327,37 +316,34 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
             // --- ROW 1: Title ---
             f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        &track.title,
-                        Style::default()
-                            .fg(app.theme.accent)
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                ]))
+                Paragraph::new(Line::from(vec![Span::styled(
+                    &track.title,
+                    Style::default()
+                        .fg(app.theme.accent)
+                        .add_modifier(Modifier::BOLD),
+                )]))
                 .alignment(Alignment::Left),
                 dash_chunks[0].inner(Margin::new(2, 0)),
             );
 
             // --- ROW 2: Artist ---
             f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(&track.artist, Style::default().fg(app.theme.fg)),
-                ]))
+                Paragraph::new(Line::from(vec![Span::styled(
+                    &track.artist,
+                    Style::default().fg(app.theme.fg),
+                )]))
                 .alignment(Alignment::Left),
                 dash_chunks[1].inner(Margin::new(2, 0)),
             );
 
             // --- ROW 3: Album ---
             f.render_widget(
-                Paragraph::new(Line::from(vec![
-                    Span::styled(
-                        track.album.as_deref().unwrap_or("Unknown"),
-                        Style::default()
-                            .fg(app.theme.fg)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]))
+                Paragraph::new(Line::from(vec![Span::styled(
+                    track.album.as_deref().unwrap_or("Unknown"),
+                    Style::default()
+                        .fg(app.theme.fg)
+                        .add_modifier(Modifier::ITALIC),
+                )]))
                 .alignment(Alignment::Left),
                 dash_chunks[2].inner(Margin::new(2, 0)),
             );
@@ -367,17 +353,15 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let vis_width = vis_area.width.saturating_sub(4);
             let vis_height = vis_area.height;
 
-            let visualizer_mode = app.settings.config.read().unwrap().audio.visualizer;
             let dsp_state = app.audio.dsp_state.read().unwrap();
-            let vis_lines = render_visualizer(
-                app.is_playing,
-                vis_width,
-                vis_height,
-                app.audio_clock,
-                &dsp_state,
-                &app.theme,
-                visualizer_mode,
-            );
+            let vis_lines = render_visualizer(crate::core::visualizer::VisualizerConfig {
+                is_playing: app.is_playing,
+                width: vis_width,
+                height: vis_height,
+                dsp: &dsp_state,
+                theme: &app.theme,
+                sample_rate: app.sample_rate as f32,
+            });
             f.render_widget(
                 Paragraph::new(vis_lines).alignment(Alignment::Center),
                 vis_area,
@@ -545,10 +529,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     let status_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Length(12),     // Mode
-            Constraint::Min(0),         // Search / Title
-            Constraint::Length(12),     // Duration
-            Constraint::Length(10),     // Vol
+            Constraint::Length(12), // Mode
+            Constraint::Min(0),     // Search / Title
+            Constraint::Length(12), // Duration
+            Constraint::Length(10), // Vol
         ])
         .split(main_layout[1]);
 
@@ -590,17 +574,38 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         status_chunks[0],
     );
 
-    let mid_text = if app.input_mode == InputMode::Search {
-        format!(" / {} ", app.search_query)
+    let (mid_text, mid_style) = if let Some(err) = &app.last_error {
+        (
+            format!(" ERROR: {} ", err),
+            Style::default()
+                .fg(Color::White)
+                .bg(app.theme.critical)
+                .add_modifier(Modifier::BOLD),
+        )
+    } else if app.input_mode == InputMode::Search {
+        (
+            format!(" / {} ", app.search_query),
+            Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
+        )
     } else if app.input_mode == InputMode::Online {
-        " STATIONS ".to_string()
+        (
+            " STATIONS ".to_string(),
+            Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
+        )
     } else if let Some(track) = &app.current_track {
-        format!(" Playing: {} - {} ", track.artist, track.title)
+        (
+            format!(" Playing: {} - {} ", track.artist, track.title),
+            Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
+        )
     } else {
-        " CHORD - LIBRARY ".to_string()
+        (
+            " CHORD - LIBRARY ".to_string(),
+            Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
+        )
     };
+
     f.render_widget(
-        Paragraph::new(mid_text).style(Style::default().fg(app.theme.fg).bg(app.theme.status_bg)),
+        Paragraph::new(mid_text).style(mid_style),
         status_chunks[1],
     );
 

@@ -1,20 +1,8 @@
-# Security Policy for Chord
+# Security & Bug Reporting
 
-## Supported Versions
+Found a bug or have a security concern? We value your help in making Chord better!
 
-Chord is a community-driven project. We currently support the following versions with security updates:
+- **Fix it yourself?** Please submit a Pull Request (PR). We love contributions!
+- **Can't fix it?** Please file an Issue on GitHub with details on how to reproduce it.
 
-| Version | Supported          |
-| ------- | ------------------ |
-| 1.1.x   | :white_check_mark: |
-| < 1.1   | :x:                |
-
-## Reporting a Vulnerability
-
-We take the security of Chord seriously. If you find a security vulnerability, please do not report it publicly via GitHub issues. Instead, please follow these steps:
-
-1. Send an email to the maintainers (if available) or contact the project owner privately.
-2. Provide a detailed description of the vulnerability, including steps to reproduce it.
-3. We will acknowledge your report within 48 hours and provide a timeline for a fix.
-
-Thank you for helping keep Chord secure.
+Chord is free and open-source software. Anyone is welcome to contribute and improve the project for everyone!

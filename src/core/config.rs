@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 #[serde(default)]
 pub struct LibraryConfig {
     pub music_dir: PathBuf,
-    pub scan_at_startup: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,7 +16,6 @@ pub struct AudioConfig {
     pub device_name: Option<String>,
     pub volume: f32,
     pub mode: String,
-    pub visualizer: crate::core::visualizer::VisualizerMode,
     pub sample_rate: u32,
     pub buffer_ms: u32,
     pub resample_quality: u32,
@@ -96,10 +94,7 @@ impl Default for LibraryConfig {
             .map(|d| d.home_dir().join("music"))
             .unwrap_or_else(|| PathBuf::from("music"));
 
-        Self {
-            music_dir,
-            scan_at_startup: true,
-        }
+        Self { music_dir }
     }
 }
 
@@ -109,7 +104,6 @@ impl Default for AudioConfig {
             device_name: None,
             volume: 1.0,
             mode: "PIPEWIRE".to_string(),
-            visualizer: crate::core::visualizer::VisualizerMode::Wave,
             sample_rate: 48000,
             buffer_ms: 100,
             resample_quality: 4,
@@ -155,12 +149,14 @@ impl Settings {
             if let Ok(mut config) = toml::from_str::<Config>(&content) {
                 // Expand ~ in music_dir if present
                 if config.library.music_dir.to_string_lossy().starts_with("~") {
-                    if let Some(home) = directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf()) {
+                    if let Some(home) =
+                        directories::BaseDirs::new().map(|d| d.home_dir().to_path_buf())
+                    {
                         let path_str = config.library.music_dir.to_string_lossy().to_string();
                         config.library.music_dir = home.join(&path_str[2..]);
                     }
                 }
-                
+
                 let mut guard = self.config.write().unwrap();
                 *guard = config;
             }

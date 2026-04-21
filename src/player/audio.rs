@@ -185,18 +185,13 @@ where
 }
 
 enum AudioCmd {
-    Init(Option<String>),
+    Init,
     Play(PathBuf),
     PlayStream(String, u64),
     SetVolume(f32),
     Pause,
     Resume,
     RegisterRadioSink(Sink, u64),
-    UpdateConfig {
-        sample_rate: u32,
-        buffer_ms: u32,
-        resample_quality: u32,
-    },
 }
 
 pub struct AudioPlayer {
@@ -217,9 +212,6 @@ struct AudioBackend {
     sink: Option<Sink>,
     radio_sink: Option<Sink>,
     volume: f32,
-    sample_rate: u32,
-    buffer_ms: u32,
-    resample_quality: u32,
     active_radio_request_id: u64,
     device_name_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     is_empty_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -235,7 +227,7 @@ impl AudioPlayer {
         suppress_alsa_errors();
         let (tx, rx) = mpsc::channel();
         let (sample_tx, sample_rx) = channel::sync_channel(10000);
-        
+
         let device_name = std::sync::Arc::new(std::sync::Mutex::new(None));
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -243,7 +235,7 @@ impl AudioPlayer {
         let mode = std::sync::Arc::new(std::sync::Mutex::new("PIPEWIRE".into()));
         let last_error = std::sync::Arc::new(std::sync::Mutex::new(None));
         let amplitude = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
-        
+
         let mut analyzer = AudioAnalyzer::new();
         let dsp_state = analyzer.state.clone();
 
@@ -264,7 +256,7 @@ impl AudioPlayer {
                     if samples_buf.len() >= 2048 {
                         // Sliding window: process current buffer
                         analyzer.process_samples(&samples_buf);
-                        
+
                         // Shift buffer by HOP_SIZE (512)
                         let hop = 512;
                         if samples_buf.len() > hop {
@@ -285,9 +277,6 @@ impl AudioPlayer {
                 sink: None,
                 radio_sink: None,
                 volume: 1.0,
-                sample_rate: 48000,
-                buffer_ms: 100,
-                resample_quality: 4,
                 active_radio_request_id: 0,
                 device_name_shared: backend_name,
                 is_empty_shared: backend_empty,
@@ -303,15 +292,11 @@ impl AudioPlayer {
             loop {
                 let cmd = rx.recv_timeout(Duration::from_millis(50));
                 match cmd {
-                    Ok(AudioCmd::Init(name)) => {
+                    Ok(AudioCmd::Init) => {
                         backend
                             .is_initializing_shared
                             .store(true, std::sync::atomic::Ordering::Relaxed);
-                        let res = if let Some(n) = name {
-                            backend.try_init_with_name(&n)
-                        } else {
-                            backend.try_init(true)
-                        };
+                        let res = backend.try_init(true);
 
                         if let Err(e) = &res {
                             *backend.last_error_shared.lock().unwrap() = Some(e.clone());
@@ -332,7 +317,9 @@ impl AudioPlayer {
                         } else {
                             *backend.last_error_shared.lock().unwrap() = None;
                         }
-                        backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
+                        backend
+                            .has_error_shared
+                            .store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(AudioCmd::PlayStream(url, request_id)) => {
                         backend.stop_sink();
@@ -355,7 +342,9 @@ impl AudioPlayer {
                                 while retry_count < max_retries {
                                     let res = (|| -> Result<Sink, String> {
                                         let response = reqwest::blocking::Client::builder()
-                                            .user_agent("Chord/1.2 (https://github.com/0xcr3at0rx/chord)")
+                                            .user_agent(
+                                                "Chord/1.2 (https://github.com/0xcr3at0rx/chord)",
+                                            )
                                             .timeout(Duration::from_secs(15))
                                             .connect_timeout(Duration::from_secs(10))
                                             .redirect(reqwest::redirect::Policy::limited(10))
@@ -372,14 +361,16 @@ impl AudioPlayer {
                                         }
 
                                         let reader = StreamingReader::new(response);
-                                        let source = Decoder::new(reader).map_err(|e| format!("Decoder: {}", e))?;
+                                        let source = Decoder::new(reader)
+                                            .map_err(|e| format!("Decoder: {}", e))?;
                                         let source = rodio::Source::convert_samples::<f32>(source);
-                                        let source = VisualizerTracker { 
-                                            inner: source, 
+                                        let source = VisualizerTracker {
+                                            inner: source,
                                             amplitude: amplitude_shared_thread.clone(),
                                             sample_tx: sample_tx_clone.clone(),
                                         };
-                                        let sink = Sink::try_new(&handle).map_err(|e| format!("Sink: {}", e))?;
+                                        let sink = Sink::try_new(&handle)
+                                            .map_err(|e| format!("Sink: {}", e))?;
                                         sink.set_volume(volume);
                                         sink.append(source);
                                         sink.play();
@@ -388,16 +379,26 @@ impl AudioPlayer {
 
                                     match res {
                                         Ok(sink) => {
-                                            let _ = tx_clone.send(AudioCmd::RegisterRadioSink(sink, request_id));
+                                            let _ = tx_clone.send(AudioCmd::RegisterRadioSink(
+                                                sink, request_id,
+                                            ));
                                             return;
                                         }
                                         Err(e) => {
                                             retry_count += 1;
                                             if retry_count >= max_retries {
-                                                *last_error_shared.lock().unwrap() = Some(format!("Connection failed after {} attempts: {}", max_retries, e));
-                                                has_error_shared.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                *last_error_shared.lock().unwrap() = Some(format!(
+                                                    "Connection failed after {} attempts: {}",
+                                                    max_retries, e
+                                                ));
+                                                has_error_shared.store(
+                                                    true,
+                                                    std::sync::atomic::Ordering::Relaxed,
+                                                );
                                             } else {
-                                                std::thread::sleep(Duration::from_millis(500 * retry_count));
+                                                std::thread::sleep(Duration::from_millis(
+                                                    500 * retry_count,
+                                                ));
                                             }
                                         }
                                     }
@@ -414,22 +415,6 @@ impl AudioPlayer {
                         } else {
                             sink.stop();
                         }
-                    }
-                    Ok(AudioCmd::UpdateConfig {
-                        sample_rate,
-                        buffer_ms,
-                        resample_quality,
-                    }) => {
-                        backend
-                            .is_initializing_shared
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        backend.sample_rate = sample_rate;
-                        backend.buffer_ms = buffer_ms;
-                        backend.resample_quality = resample_quality;
-                        let _ = backend.try_init(true);
-                        backend
-                            .is_initializing_shared
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(AudioCmd::SetVolume(v)) => {
                         backend.volume = v;
@@ -486,12 +471,7 @@ impl AudioPlayer {
     }
 
     pub fn try_init(&self) {
-        let _ = self.cmd_tx.send(AudioCmd::Init(None));
-    }
-
-    #[allow(dead_code)]
-    pub fn try_init_with_name(&self, name: &str) {
-        let _ = self.cmd_tx.send(AudioCmd::Init(Some(name.to_string())));
+        let _ = self.cmd_tx.send(AudioCmd::Init);
     }
 
     pub fn play(&self, path: PathBuf) {
@@ -518,14 +498,6 @@ impl AudioPlayer {
 
     pub fn set_volume(&self, volume: f32) {
         let _ = self.cmd_tx.send(AudioCmd::SetVolume(volume));
-    }
-
-    pub fn update_audio_config(&self, sample_rate: u32, buffer_ms: u32, resample_quality: u32) {
-        let _ = self.cmd_tx.send(AudioCmd::UpdateConfig {
-            sample_rate,
-            buffer_ms,
-            resample_quality,
-        });
     }
 
     pub fn pause(&self) {
@@ -605,26 +577,6 @@ impl AudioBackend {
         }
 
         Err("No audio output devices found.".into())
-    }
-
-    fn try_init_with_name(&mut self, name: &str) -> Result<(), String> {
-        let host = rodio::cpal::default_host();
-        if let Ok(devices) = host.output_devices() {
-            for device in devices {
-                if let Ok(d_name) = device.name() {
-                    if d_name == name {
-                        if let Ok((stream, handle)) = OutputStream::try_from_device(&device) {
-                            self.stop_all();
-                            self.stream = Some(stream);
-                            self.handle = Some(handle);
-                            *self.device_name_shared.lock().unwrap() = Some(d_name);
-                            return Ok(());
-                        }
-                    }
-                }
-            }
-        }
-        self.try_init(true)
     }
 
     fn play(&mut self, path: PathBuf) -> Result<(), String> {

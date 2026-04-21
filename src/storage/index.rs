@@ -32,19 +32,51 @@ impl LibraryIndex {
     }
 
     pub async fn load_cache(&self, music_dir: &Path) -> Result<()> {
-        if !self.cache_path.exists() {
-            return Ok(());
-        }
-
         let cache_path = self.cache_path.clone();
+        let music_dir_owned = music_dir.to_path_buf();
+
         // Canonicalize music_dir for reliable prefix matching
-        let music_dir = music_dir.canonicalize().unwrap_or_else(|_| music_dir.to_path_buf());
+        let canonical_music_dir = music_dir
+            .canonicalize()
+            .unwrap_or_else(|_| music_dir.to_path_buf());
 
         let (tracks_map, playlists) = tokio::task::spawn_blocking(move || {
-            let mut cache: LibraryCache = std::fs::read_to_string(&cache_path)
-                .ok()
-                .and_then(|s| toml::from_str(&s).ok())
-                .unwrap_or_default();
+            let mut cache: LibraryCache = if cache_path.exists() {
+                std::fs::read_to_string(&cache_path)
+                    .ok()
+                    .and_then(|s| toml::from_str(&s).ok())
+                    .unwrap_or_default()
+            } else {
+                LibraryCache::default()
+            };
+
+            // If cache is empty, perform an initial scan
+            if cache.tracks.is_empty() && music_dir_owned.exists() {
+                for entry in walkdir::WalkDir::new(&music_dir_owned) {
+                    if let Ok(entry) = entry {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                            if matches!(ext.as_str(), "mp3" | "flac" | "ogg" | "wav" | "m4a") {
+                                let path_str = path.to_string_lossy().to_string();
+                                let mut metadata = TrackMetadata {
+                                    track_id: uuid::Uuid::new_v4().to_string(),
+                                    title: path.file_name().and_then(|f| f.to_str()).unwrap_or("Unknown").to_string(),
+                                    artist: "Unknown Artist".into(),
+                                    file_path: Some(path_str.clone()),
+                                    ..Default::default()
+                                };
+                                metadata.search_key = format!("{} unknown", metadata.title).to_lowercase();
+                                cache.tracks.insert(path_str, metadata);
+                            }
+                        }
+                    }
+                }
+                // Save initial scan
+                if let Ok(toml_str) = toml::to_string(&cache) {
+                    let _ = std::fs::write(&cache_path, toml_str);
+                }
+            }
 
             for track in cache.tracks.values_mut() {
                 if track.search_key.is_empty() {
@@ -59,7 +91,6 @@ impl LibraryIndex {
             }
 
             let mut music_folders = std::collections::HashSet::new();
-            let canonical_music_dir = music_dir.canonicalize().unwrap_or_else(|_| music_dir.clone());
             for path_str in cache.tracks.keys() {
                 let path = Path::new(path_str);
                 if let Some(parent) = path.parent() {

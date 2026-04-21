@@ -1,67 +1,30 @@
-# Chord
+# Chord 🎶
 
-**Chord** is a high-fidelity TUI music player for local audio files and internet radio. It features a minimalist, distraction-free interface designed for audiophiles who value both aesthetics and performance.
+A modern, fast, and beautiful terminal music player and radio streamer built with Rust.
 
-## Preview
+## Features
+- **Local Library**: Effortlessly play your music with a clean, searchable interface.
+- **Radio Streaming**: Stream your favorite stations from around the world.
+- **High-Fidelity Visuals**: Advanced CRT Oscilloscope visualizer with phosphor glow and multi-shape geometric waveforms.
+- **Intelligent Audio Analysis**: Real-time DSP and FFT analysis for audio-responsive physics and beat detection.
+- **Procedural Art**: Unique, colorful, theme-aware art for every radio station and track.
+- **Automatic Library Scanner**: Automatically indexes your music directory on startup.
+- **Fast & Light**: Optimized for performance and low resource usage.
 
-<p align="center">
-  <img src="images/screenshot1.png" width="800" alt="Chord TUI Main Interface">
-  <br>
-  <i>The ultra-minimalist "MUSIC" mode with real-time Wave visualizer</i>
-</p>
+## Quick Start
+1. **Install dependencies**: `alsa-lib` (Linux).
+2. **Run**: `cargo run`.
+3. **Switch to Radio**: Press `CTRL+R`.
+4. **Search**: Press `/`.
 
-<p align="center">
-  <img src="images/screenshot2.png" width="800" alt="Chord TUI Radio Mode">
-  <br>
-  <i>"RADIO" mode featuring curated global stations and procedural radio art</i>
-</p>
+## Keybindings
+- `j/k` or `Arrows`: Navigate items.
+- `l/h`: Skip to Next/Previous track.
+- `o/p`: Adjust Volume (Down/Up).
+- `Space`: Toggle Play/Pause.
+- `Enter`: Play selected item.
+- `/`: Enter Search mode.
+- `Tab`: Cycle between library views.
+- `q`: Quit.
 
-## How it works
-
-Just run the `chord` command. The app will automatically scan your `music_dir` for files, update its local cache, and open the TUI player. Chord is built with a focus on simplicity—no top bars, no clutter, just your music and a high-density visualizer.
-
-## Controls
-
-| Key | Action |
-| :--- | :--- |
-| `j` / `k` | Navigate lists |
-| `Enter` | Play selection / Confirm search |
-| `Space` / `p` | Pause / Resume |
-| `l` / `h` | Next / Previous track |
-| `Tab` | Context Select (Library folders) |
-| `/` | Toggle Search / Filter |
-| `Ctrl + r` | Toggle Online (Radio) Mode |
-| `+` / `-` | Volume Control |
-
-## Configuration
-
-Settings are managed in `~/.config/chord/config.toml`.
-
-### High-Fidelity Audio Setup
-```toml
-[audio]
-visualizer = "Wave"
-sample_rate = 96000     # Supports 44100 to 192000
-buffer_ms = 100         # Lower for latency, higher for stability
-resample_quality = 4    # 1 (Fastest) to 4 (Best quality)
-bit_depth = 32          # 16 or 32 (Float PCM)
-volume = 1.0
-
-[library]
-music_dir = "~/music"
-scan_at_startup = true
-```
-
-### Theme Customization
-```toml
-[theme]
-bg = "#121212"
-fg = "#CCCCCC"
-accent = "#1BFD9C"
-accent_dim = "#66B2B2"
-critical = "#BA0959"
-```
-
-## License
-
-GNU GPL v3. See [LICENSE](LICENSE).
+*For more details, see [KEYBINDINGS.md](./KEYBINDINGS.md) and [REFER.md](./REFER.md).*

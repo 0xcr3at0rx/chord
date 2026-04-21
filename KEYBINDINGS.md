@@ -19,5 +19,5 @@
 ## Search Mode
 - `Characters`: Type to filter the current list.
 - `Backspace`: Remove the last character.
-- `Esc` or `Enter`: Exit search mode and return to navigation.
-- `o/p`: Adjust Volume even while searching.
+- `Esc`, `Enter` or `/`: Exit search mode and return to navigation.
+- **Toggle/Clear**: Press `/` to enter search mode and clear the filter. Press `Enter` immediately to remove the filter entirely.

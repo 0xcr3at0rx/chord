@@ -23,7 +23,7 @@ A modern, fast, and beautiful terminal music player and radio streamer built wit
 - `o/p`: Adjust Volume (Down/Up).
 - `Space`: Toggle Play/Pause.
 - `Enter`: Play selected item.
-- `/`: Enter Search mode.
+- `/`: Toggle Search mode.
 - `Tab`: Cycle between library views.
 - `q`: Quit.
 

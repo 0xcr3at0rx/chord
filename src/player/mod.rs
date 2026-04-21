@@ -162,43 +162,15 @@ async fn run_app<B: Backend>(terminal: &mut Terminal<B>, app: &mut App<'_>) -> C
 
                         InputMode::Search => {
                             match key.code {
-                                KEY_VOL_UP => {
-                                    app.volume = (app.volume + 0.05).min(1.0);
-                                    app.audio.set_volume(app.volume);
-                                    let _ = app.save_config();
-                                }
-                                KEY_VOL_DOWN => {
-                                    app.volume = (app.volume - 0.05).max(0.0);
-                                    app.audio.set_volume(app.volume);
-                                    let _ = app.save_config();
-                                }
-                                KEY_CONFIRM | KEY_SEARCH_MODE => {
+                                KEY_CONFIRM | KEY_SEARCH_MODE | KeyCode::Esc => {
                                     app.input_mode = app.previous_mode;
                                 }
                                 KeyCode::Char(c) => {
-                                    // Only add to search if not a volume control key
-                                    if c != 'o' && c != 'p' {
-                                        app.search_query.push(c);
-                                        if app.previous_mode == InputMode::Online {
-                                            app.filter_radio();
-                                        } else {
-                                            app.filter_tracks();
-                                        }
+                                    app.search_query.push(c);
+                                    if app.previous_mode == InputMode::Online {
+                                        app.filter_radio();
                                     } else {
-                                        // Handle volume keys explicitly even in Char branch
-                                        match key.code {
-                                            KEY_VOL_UP => {
-                                                app.volume = (app.volume + 0.05).min(1.0);
-                                                app.audio.set_volume(app.volume);
-                                                let _ = app.save_config();
-                                            }
-                                            KEY_VOL_DOWN => {
-                                                app.volume = (app.volume - 0.05).max(0.0);
-                                                app.audio.set_volume(app.volume);
-                                                let _ = app.save_config();
-                                            }
-                                            _ => {}
-                                        }
+                                        app.filter_tracks();
                                     }
                                 }
                                 KeyCode::Backspace => {

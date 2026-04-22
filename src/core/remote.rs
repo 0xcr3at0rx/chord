@@ -13,8 +13,9 @@ pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/remote.rs"));
 }
 
-pub use pb::{RemoteCommand, RemoteStatus, DeviceInfo};
+pub use pb::{RemoteCommand, RemoteStatus, DeviceInfo, RemoteEvent, BrowseResponse, SyncResponse};
 pub use pb::remote_command::Command;
+pub use pb::remote_event::Event;
 
 pub struct RemoteManager {
     pub status: Arc<RwLock<RemoteStatus>>,
@@ -42,8 +43,12 @@ impl RemoteManager {
         }
     }
 
-    #[tracing::instrument(skip(self, cmd_tx))]
-    pub async fn start_services(&self, cmd_tx: mpsc::UnboundedSender<Command>) -> anyhow::Result<()> {
+    #[tracing::instrument(skip(self, cmd_tx, index))]
+    pub async fn start_services(
+        &self,
+        cmd_tx: mpsc::UnboundedSender<Command>,
+        index: Arc<crate::storage::index::LibraryIndex>,
+    ) -> anyhow::Result<()> {
         tracing::info!("Starting remote management services");
         let device_id = self.device_id.clone();
         let device_name = self.device_name.clone();
@@ -111,6 +116,7 @@ impl RemoteManager {
                     tracing::info!(client = %addr, "Accepted new control connection");
                     let cmd_tx = cmd_tx.clone();
                     let status = status.clone();
+                    let index = index.clone();
                     tokio::spawn(async move {
                         let mut buf = BytesMut::with_capacity(4096);
                         let mut interval = tokio::time::interval(Duration::from_millis(500));
@@ -135,8 +141,29 @@ impl RemoteManager {
                                                     let msg_data = buf.split_to(len);
                                                     if let Ok(msg) = RemoteCommand::decode(&msg_data[..]) {
                                                         if let Some(cmd) = msg.command {
-                                                            tracing::debug!(client = %addr, "Received remote command");
-                                                            let _ = cmd_tx.send(cmd);
+                                                            match cmd {
+                                                                Command::BrowseRequest(req) => {
+                                                                    let res = index.handle_browse_request(req).await;
+                                                                    let event = RemoteEvent {
+                                                                        event: Some(pb::remote_event::Event::BrowseResponse(res)),
+                                                                    };
+                                                                    let _ = Self::send_event_to_stream(&mut stream, event).await;
+                                                                }
+                                                                Command::SyncRequest(req) => {
+                                                                    let res = SyncResponse {
+                                                                        client_time_us: req.client_time_us,
+                                                                        server_time_us: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_micros() as u64,
+                                                                    };
+                                                                    let event = RemoteEvent {
+                                                                        event: Some(pb::remote_event::Event::SyncResponse(res)),
+                                                                    };
+                                                                    let _ = Self::send_event_to_stream(&mut stream, event).await;
+                                                                }
+                                                                _ => {
+                                                                    tracing::debug!(client = %addr, "Forwarding remote command to app");
+                                                                    let _ = cmd_tx.send(cmd);
+                                                                }
+                                                            }
                                                         }
                                                     }
                                                 } else {
@@ -148,14 +175,12 @@ impl RemoteManager {
                                 }
                                 _ = interval.tick() => {
                                     let s = status.read().await;
-                                    let mut out_buf = BytesMut::with_capacity(s.encoded_len() + 4);
-                                    let len = s.encoded_len() as u32;
-                                    out_buf.extend_from_slice(&len.to_be_bytes());
-                                    if s.encode(&mut out_buf).is_ok() {
-                                        if stream.write_all(&out_buf).await.is_err() {
-                                            tracing::warn!(client = %addr, "Failed to send status update, closing connection");
-                                            break;
-                                        }
+                                    let event = RemoteEvent {
+                                        event: Some(pb::remote_event::Event::Status(s.clone())),
+                                    };
+                                    if Self::send_event_to_stream(&mut stream, event).await.is_err() {
+                                        tracing::warn!(client = %addr, "Failed to send status update, closing connection");
+                                        break;
                                     }
                                 }
                             }
@@ -165,6 +190,15 @@ impl RemoteManager {
             }
         });
 
+        Ok(())
+    }
+
+    async fn send_event_to_stream(stream: &mut TcpStream, event: RemoteEvent) -> anyhow::Result<()> {
+        let mut out_buf = BytesMut::with_capacity(event.encoded_len() + 4);
+        let len = event.encoded_len() as u32;
+        out_buf.extend_from_slice(&len.to_be_bytes());
+        event.encode(&mut out_buf)?;
+        stream.write_all(&out_buf).await?;
         Ok(())
     }
 

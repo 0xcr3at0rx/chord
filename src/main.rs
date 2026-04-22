@@ -29,7 +29,7 @@ async fn main() -> anyhow::Result<()> {
     let (remote_cmd_tx, remote_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     
     // Start remote services (discovery and control server)
-    remote_manager.start_services(remote_cmd_tx).await?;
+    remote_manager.start_services(remote_cmd_tx, index.clone()).await?;
 
     // Always run as a potential player and controller
     if let Err(e) = player::run_player(settings, index, remote_manager, remote_cmd_rx).await {

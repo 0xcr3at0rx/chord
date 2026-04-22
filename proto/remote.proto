@@ -79,6 +79,15 @@ message StreamData {
 // 3. Status & Events (Server/Renderer -> Client)
 // -------------------------------------------------------------------
 
+message RemoteEvent {
+  oneof event {
+    RemoteStatus status = 1;
+    BrowseResponse browse_response = 2;
+    SyncResponse sync_response = 3;
+    string error_message = 4;
+  }
+}
+
 message RemoteStatus {
   optional string current_track_id = 1;
   bool is_playing = 2;            // Legacy support

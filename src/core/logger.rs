@@ -117,6 +117,16 @@ pub extern "C" fn chord_log_error(msg: *const std::os::raw::c_char) {
 }
 
 #[no_mangle]
+pub extern "C" fn chord_log_warn(msg: *const std::os::raw::c_char) {
+    if msg.is_null() { return; }
+    unsafe {
+        if let Ok(s) = std::ffi::CStr::from_ptr(msg).to_str() {
+            tracing::warn!(target: "chord::ffi", "{}", s);
+        }
+    }
+}
+
+#[no_mangle]
 pub extern "C" fn chord_log_debug(msg: *const std::os::raw::c_char) {
     if msg.is_null() { return; }
     unsafe {

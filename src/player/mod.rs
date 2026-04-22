@@ -21,7 +21,8 @@ pub mod app;
 pub mod audio;
 pub mod ui;
 
-use crate::core::remote::{Command, RemoteManager, RemoteStatus};
+use crate::core::remote::{self, Command, RemoteManager, RemoteEvent, pb};
+use crate::core::remote::pb::remote_event::Event as PbEvent;
 use tokio::sync::mpsc::UnboundedReceiver;
 use prost::Message;
 use tokio::io::AsyncReadExt;
@@ -85,7 +86,7 @@ async fn run_app<B: Backend>(
 
     let mut active_remote_id: Option<String> = None;
     let mut active_remote_stream: Option<tokio::net::TcpStream> = None;
-    let (status_tx, mut status_rx) = tokio::sync::mpsc::unbounded_channel::<RemoteStatus>();
+    let (event_tx, mut event_rx) = tokio::sync::mpsc::unbounded_channel::<RemoteEvent>();
 
     let mut stream_tx: Option<std::sync::mpsc::Sender<Vec<f32>>> = None;
 
@@ -174,20 +175,38 @@ async fn run_app<B: Backend>(
             }
         }
 
-        // Handle Status Updates (from the device we are controlling)
-        while let Ok(status) = status_rx.try_recv() {
+        // Handle Events (from the device we are controlling)
+        while let Ok(event) = event_rx.try_recv() {
             if active_remote_id.is_some() {
-                app.is_playing = status.is_playing;
-                app.progress = status.progress;
-                app.volume = status.volume;
-                if let Some(id) = status.current_track_id {
-                    if app.current_track.as_ref().map(|t| t.track_id.clone()) != Some(id.clone()) {
-                        if let Some(track) = app.all_tracks.iter().find(|t| t.track_id == id) {
-                            app.current_track = Some(track.clone());
+                if let Some(ev) = event.event {
+                    match ev {
+                        PbEvent::Status(status) => {
+                            app.is_playing = status.is_playing;
+                            app.progress = status.progress;
+                            app.volume = status.volume;
+                            if let Some(id) = status.current_track_id {
+                                let current_id = app.current_track.as_ref().map(|t| t.track_id.clone());
+                                if current_id != Some(id.clone()) {
+                                    if let Some(track) = app.all_tracks.iter().find(|t| t.track_id == id) {
+                                        app.current_track = Some(track.clone());
+                                    }
+                                }
+                            }
+                            app.needs_redraw = true;
+                        }
+                        PbEvent::BrowseResponse(res) => {
+                            tracing::info!("Received BrowseResponse with {} tracks", res.tracks.len());
+                            // TODO: Display remote library results in UI
+                        }
+                        PbEvent::SyncResponse(sync) => {
+                            tracing::debug!("Received SyncResponse: {:?}", sync);
+                        }
+                        PbEvent::ErrorMessage(msg) => {
+                            tracing::error!("Remote Error: {}", msg);
+                            app.last_error = Some(format!("Remote Error: {}", msg));
                         }
                     }
                 }
-                app.needs_redraw = true;
             }
         }
 
@@ -294,8 +313,19 @@ async fn run_app<B: Backend>(
                             if !app.filtered_tracks.is_empty() {
                                 if let Some(i) = app.list_state.selected() {
                                     if let Some(track) = app.filtered_tracks.get(i) {
-                                        if let Some(ref mut stream) = active_remote_stream {
-                                            let _ = RemoteManager::send_command(stream, Command::PlayTrackId(track.track_id.clone())).await;
+                                        if let Some(remote_id) = &active_remote_id {
+                                            let info = app.discovered_devices.iter().find(|d| &d.id == remote_id).cloned();
+                                            if let (Some(info), Some(path_str)) = (info, &track.file_path) {
+                                                let path = std::path::Path::new(path_str).to_path_buf();
+                                                let rm = app.remote_manager.clone();
+                                                let mut streamer = crate::core::streamer::AudioStreamer::new();
+                                                tokio::spawn(async move {
+                                                    if let Ok(stream) = rm.connect_to_device(&info).await {
+                                                        let _ = streamer.stream_file(&path, stream).await;
+                                                    }
+                                                });
+                                                tracing::info!(title = %track.title, "Casting track to remote device");
+                                            }
                                         } else {
                                             let _ = app.play_track(i);
                                         }
@@ -469,23 +499,23 @@ async fn run_app<B: Backend>(
                                         app.is_slave = true;
                                         app.input_mode = InputMode::Offline;
 
-                                        // Start status listener for this stream
+                                        // Start event listener for this stream
                                         let mut stream_clone = app.remote_manager.connect_to_device(info).await.unwrap();
-                                        let status_tx_clone = status_tx.clone();
+                                        let event_tx_clone = event_tx.clone();
                                         let remote_name = info.name.clone();
                                         tokio::spawn(async move {
-                                            tracing::debug!(device = %remote_name, "Starting remote status listener task");
+                                            tracing::debug!(device = %remote_name, "Starting remote event listener task");
                                             loop {
                                                 let mut len_buf = [0u8; 4];
                                                 if stream_clone.read_exact(&mut len_buf).await.is_err() { break; }
                                                 let len = u32::from_be_bytes(len_buf) as usize;
                                                 let mut msg_buf = vec![0u8; len];
                                                 if stream_clone.read_exact(&mut msg_buf).await.is_err() { break; }
-                                                if let Ok(st) = RemoteStatus::decode(&msg_buf[..]) {
-                                                    let _ = status_tx_clone.send(st);
+                                                if let Ok(ev) = RemoteEvent::decode(&msg_buf[..]) {
+                                                    let _ = event_tx_clone.send(ev);
                                                 }
                                             }
-                                            tracing::debug!(device = %remote_name, "Remote status listener task finished");
+                                            tracing::debug!(device = %remote_name, "Remote event listener task finished");
                                         });
                                     } else {
                                         tracing::error!(id = %id, "Failed to connect to remote device");

@@ -3,6 +3,7 @@ use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -13,7 +14,6 @@ pub struct LibraryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AudioConfig {
-    pub device_name: Option<String>,
     pub volume: f32,
     pub mode: String,
     pub sample_rate: u32,
@@ -36,12 +36,33 @@ pub struct ThemeConfig {
     pub status_bg: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct RemoteConfig {
+    pub device_name: String,
+    pub device_id: String,
+    pub disable_broadcast: bool,
+}
+
+impl Default for RemoteConfig {
+    fn default() -> Self {
+        Self {
+            device_name: hostname::get()
+                .map(|h| h.to_string_lossy().to_string())
+                .unwrap_or_else(|_| "Chord Device".to_string()),
+            device_id: uuid::Uuid::new_v4().to_string(),
+            disable_broadcast: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub library: LibraryConfig,
     pub audio: AudioConfig,
     pub theme: ThemeConfig,
+    pub remote: RemoteConfig,
 }
 
 impl Default for ThemeConfig {
@@ -101,7 +122,6 @@ impl Default for LibraryConfig {
 impl Default for AudioConfig {
     fn default() -> Self {
         Self {
-            device_name: None,
             volume: 1.0,
             mode: "PIPEWIRE".to_string(),
             sample_rate: 48000,
@@ -112,7 +132,6 @@ impl Default for AudioConfig {
     }
 }
 
-use std::sync::RwLock;
 
 #[derive(Debug)]
 pub struct Settings {

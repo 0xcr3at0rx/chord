@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rodio::cpal::traits::{DeviceTrait, HostTrait};
+use rodio::cpal::traits::{HostTrait, DeviceTrait};
 use rodio::{Decoder, OutputStream, OutputStreamHandle, Sink};
 use std::fs::File;
 use std::io::{BufReader, Read, Seek, SeekFrom};
@@ -124,7 +124,7 @@ use crate::core::dsp::{AudioAnalyzer, DspState};
 use std::sync::mpsc as channel;
 
 fn suppress_alsa_errors() {
-    // Disabled C-variadic FFI as it is unstable.
+    // Already handled by gag-based redirection in logger.rs
 }
 
 #[derive(Clone, Debug)]
@@ -188,15 +188,54 @@ enum AudioCmd {
     Init,
     Play(PathBuf),
     PlayStream(String, u64),
+    PlayRaw(mpsc::Receiver<Vec<f32>>, u32, u16), // samples_rx, sample_rate, channels
     SetVolume(f32),
     Pause,
     Resume,
+    Stop,
     RegisterRadioSink(Sink, u64),
+}
+
+struct RawSource {
+    samples_rx: mpsc::Receiver<Vec<f32>>,
+    current_chunk: Vec<f32>,
+    read_pos: usize,
+    sample_rate: u32,
+    channels: u16,
+}
+
+impl Iterator for RawSource {
+    type Item = f32;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.read_pos >= self.current_chunk.len() {
+            match self.samples_rx.try_recv() {
+                Ok(chunk) => {
+                    self.current_chunk = chunk;
+                    self.read_pos = 0;
+                }
+                Err(_) => return Some(0.0), // Fill with silence if buffer empty
+            }
+        }
+        
+        if self.read_pos < self.current_chunk.len() {
+            let s = self.current_chunk[self.read_pos];
+            self.read_pos += 1;
+            Some(s)
+        } else {
+            Some(0.0)
+        }
+    }
+}
+
+impl rodio::Source for RawSource {
+    fn current_frame_len(&self) -> Option<usize> { None }
+    fn channels(&self) -> u16 { self.channels }
+    fn sample_rate(&self) -> u32 { self.sample_rate }
+    fn total_duration(&self) -> Option<Duration> { None }
 }
 
 pub struct AudioPlayer {
     cmd_tx: mpsc::Sender<AudioCmd>,
-    pub device_name: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     pub is_empty: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub has_error: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub is_initializing: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -213,7 +252,6 @@ struct AudioBackend {
     radio_sink: Option<Sink>,
     volume: f32,
     active_radio_request_id: u64,
-    device_name_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     is_empty_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     has_error_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -228,7 +266,6 @@ impl AudioPlayer {
         let (tx, rx) = mpsc::channel();
         let (sample_tx, sample_rx) = channel::sync_channel(10000);
 
-        let device_name = std::sync::Arc::new(std::sync::Mutex::new(None));
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let is_initializing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -239,7 +276,6 @@ impl AudioPlayer {
         let mut analyzer = AudioAnalyzer::new();
         let dsp_state = analyzer.state.clone();
 
-        let backend_name = device_name.clone();
         let backend_empty = is_empty.clone();
         let backend_error = has_error.clone();
         let backend_init = is_initializing.clone();
@@ -278,7 +314,6 @@ impl AudioPlayer {
                 radio_sink: None,
                 volume: 1.0,
                 active_radio_request_id: 0,
-                device_name_shared: backend_name,
                 is_empty_shared: backend_empty,
                 has_error_shared: backend_error,
                 is_initializing_shared: backend_init,
@@ -293,6 +328,7 @@ impl AudioPlayer {
                 let cmd = rx.recv_timeout(Duration::from_millis(50));
                 match cmd {
                     Ok(AudioCmd::Init) => {
+                        tracing::debug!("AudioCmd::Init received");
                         backend
                             .is_initializing_shared
                             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -311,6 +347,7 @@ impl AudioPlayer {
                             .store(false, std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(AudioCmd::Play(path)) => {
+                        tracing::debug!(path = ?path, "AudioCmd::Play received");
                         let res = backend.play(path);
                         if let Err(e) = &res {
                             *backend.last_error_shared.lock().unwrap() = Some(e.clone());
@@ -322,8 +359,14 @@ impl AudioPlayer {
                             .store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                     }
                     Ok(AudioCmd::PlayStream(url, request_id)) => {
+                        tracing::info!(url = %url, request_id, "AudioCmd::PlayStream received");
                         backend.stop_sink();
                         backend.active_radio_request_id = request_id;
+
+                        // Ensure we have a handle before spawning radio thread
+                        if backend.handle.is_none() {
+                            let _ = backend.try_init(false);
+                        }
 
                         let tx_clone = backend_tx.clone();
                         let handle_shared = backend.handle.clone();
@@ -406,7 +449,33 @@ impl AudioPlayer {
                             }
                         });
                     }
+                    Ok(AudioCmd::PlayRaw(rx, sample_rate, channels)) => {
+                        tracing::info!(sample_rate, channels, "AudioCmd::PlayRaw received (streaming)");
+                        backend.stop_sink();
+                        if let Some(handle) = &backend.handle {
+                            let source = RawSource {
+                                samples_rx: rx,
+                                current_chunk: Vec::new(),
+                                read_pos: 0,
+                                sample_rate,
+                                channels,
+                            };
+                            let source = VisualizerTracker {
+                                inner: source,
+                                amplitude: backend.amplitude_shared.clone(),
+                                sample_tx: backend.sample_tx.clone(),
+                            };
+                            if let Ok(sink) = Sink::try_new(handle) {
+                                sink.set_volume(backend.volume);
+                                sink.append(source);
+                                sink.play();
+                                backend.sink = Some(sink);
+                                backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
                     Ok(AudioCmd::RegisterRadioSink(sink, request_id)) => {
+                        tracing::debug!(request_id, "AudioCmd::RegisterRadioSink received");
                         if request_id == backend.active_radio_request_id {
                             backend.radio_sink = Some(sink);
                             backend
@@ -417,6 +486,7 @@ impl AudioPlayer {
                         }
                     }
                     Ok(AudioCmd::SetVolume(v)) => {
+                        tracing::debug!(volume = v, "AudioCmd::SetVolume received");
                         backend.volume = v;
                         if let Some(s) = &backend.sink {
                             s.set_volume(v);
@@ -426,6 +496,7 @@ impl AudioPlayer {
                         }
                     }
                     Ok(AudioCmd::Pause) => {
+                        tracing::info!("AudioCmd::Pause received");
                         if let Some(s) = &backend.sink {
                             s.pause();
                         }
@@ -434,12 +505,17 @@ impl AudioPlayer {
                         }
                     }
                     Ok(AudioCmd::Resume) => {
+                        tracing::info!("AudioCmd::Resume received");
                         if let Some(s) = &backend.sink {
                             s.play();
                         }
                         if let Some(s) = &backend.radio_sink {
                             s.play();
                         }
+                    }
+                    Ok(AudioCmd::Stop) => {
+                        tracing::info!("AudioCmd::Stop received");
+                        backend.stop_sink();
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -459,7 +535,6 @@ impl AudioPlayer {
 
         Self {
             cmd_tx: tx,
-            device_name,
             is_empty,
             has_error,
             is_initializing,
@@ -496,6 +571,12 @@ impl AudioPlayer {
         let _ = self.cmd_tx.send(AudioCmd::PlayStream(url, request_id));
     }
 
+    pub fn play_raw(&self, rx: mpsc::Receiver<Vec<f32>>, sample_rate: u32, channels: u16) {
+        self.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.has_error.store(false, std::sync::atomic::Ordering::Relaxed);
+        let _ = self.cmd_tx.send(AudioCmd::PlayRaw(rx, sample_rate, channels));
+    }
+
     pub fn set_volume(&self, volume: f32) {
         let _ = self.cmd_tx.send(AudioCmd::SetVolume(volume));
     }
@@ -506,6 +587,10 @@ impl AudioPlayer {
 
     pub fn resume(&self) {
         let _ = self.cmd_tx.send(AudioCmd::Resume);
+    }
+
+    pub fn stop(&self) {
+        let _ = self.cmd_tx.send(AudioCmd::Stop);
     }
 
     pub fn is_empty(&self) -> bool {
@@ -533,6 +618,7 @@ impl AudioPlayer {
 
 impl AudioBackend {
     fn stop_sink(&mut self) {
+        tracing::debug!("Stopping audio sinks");
         if let Some(sink) = &self.sink {
             sink.stop();
         }
@@ -544,79 +630,103 @@ impl AudioBackend {
     }
 
     fn stop_all(&mut self) {
+        tracing::debug!("Stopping all audio components and streams");
         self.stop_sink();
         self.handle = None;
         self.stream = None;
     }
 
+    #[tracing::instrument(skip(self))]
     fn try_init(&mut self, _force: bool) -> Result<(), String> {
+        tracing::info!("Initializing audio output device");
         self.stop_all();
         let host = rodio::cpal::default_host();
+        tracing::debug!(host = host.id().name(), "Using CPAL host");
 
         if let Ok((stream, handle)) = OutputStream::try_default() {
+            tracing::info!("Successfully initialized default output device");
             self.stream = Some(stream);
             self.handle = Some(handle);
-            let name = host
-                .default_output_device()
-                .and_then(|d| d.name().ok())
-                .unwrap_or_else(|| "System Default".into());
-            *self.device_name_shared.lock().unwrap() = Some(name);
             return Ok(());
         }
 
+        tracing::warn!("Default output device failed, scanning for alternatives");
         if let Ok(devices) = host.output_devices() {
-            for device in devices {
+            for (idx, device) in devices.enumerate() {
+                let name = device.name().unwrap_or_else(|_| "Unknown".into());
+                tracing::debug!(idx, name = %name, "Trying alternative device");
                 if let Ok((stream, handle)) = OutputStream::try_from_device(&device) {
+                    tracing::info!(name = %name, "Successfully initialized alternative device");
                     self.stream = Some(stream);
                     self.handle = Some(handle);
-                    let name = device.name().unwrap_or_else(|_| "Unknown Device".into());
-                    *self.device_name_shared.lock().unwrap() = Some(name.clone());
                     return Ok(());
                 }
             }
         }
 
+        tracing::error!("No audio output devices found");
         Err("No audio output devices found.".into())
     }
 
+    #[tracing::instrument(skip(self))]
     fn play(&mut self, path: PathBuf) -> Result<(), String> {
+        tracing::info!(path = ?path, "Starting local file playback");
         self.stop_sink();
 
-        for attempt in 0..3 {
-            if let Err(e) = self.try_init(false) {
-                if attempt == 2 {
-                    return Err(e);
+        // Only initialize if we don't have a valid handle
+        if self.handle.is_none() {
+            tracing::debug!("No active audio handle, attempting initialization");
+            for attempt in 0..3 {
+                if let Err(e) = self.try_init(false) {
+                    tracing::warn!(attempt = attempt + 1, error = %e, "Initialization attempt failed");
+                    if attempt == 2 {
+                        return Err(e);
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
                 }
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
+                break;
             }
+        }
 
-            if let Some(handle) = &self.handle {
-                let file = File::open(&path).map_err(|e| e.to_string())?;
-                let source = Decoder::new(BufReader::new(file)).map_err(|e| e.to_string())?;
-                let source = rodio::Source::convert_samples::<f32>(source);
-                let source = VisualizerTracker {
-                    inner: source,
-                    amplitude: self.amplitude_shared.clone(),
-                    sample_tx: self.sample_tx.clone(),
-                };
+        if let Some(handle) = &self.handle {
+            tracing::trace!(path = ?path, "Opening file and creating decoder");
+            let file = File::open(&path).map_err(|e| {
+                tracing::error!(path = ?path, error = %e, "Failed to open audio file");
+                e.to_string()
+            })?;
+            let source = Decoder::new(BufReader::new(file)).map_err(|e| {
+                tracing::error!(path = ?path, error = %e, "Failed to decode audio file");
+                e.to_string()
+            })?;
+            let source = rodio::Source::convert_samples::<f32>(source);
+            let source = VisualizerTracker {
+                inner: source,
+                amplitude: self.amplitude_shared.clone(),
+                sample_tx: self.sample_tx.clone(),
+            };
 
-                match Sink::try_new(handle) {
-                    Ok(sink) => {
-                        sink.set_volume(self.volume);
-                        sink.append(source);
-                        sink.play();
-                        self.sink = Some(sink);
-                        return Ok(());
-                    }
-                    Err(_) => {
-                        self.stop_all();
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
+            tracing::debug!("Creating sink and appending source");
+            match Sink::try_new(handle) {
+                Ok(sink) => {
+                    sink.set_volume(self.volume);
+                    sink.append(source);
+                    sink.play();
+                    self.sink = Some(sink);
+                    self.is_empty_shared
+                        .store(false, std::sync::atomic::Ordering::Release);
+                    tracing::info!(path = ?path, "Playback started successfully");
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::error!(error = %e, "Failed to create rodio sink");
+                    self.stop_all();
+                    return Err(format!("Sink error: {}", e));
                 }
             }
         }
 
+        tracing::error!("No audio handle available after initialization attempts");
         Err("Playback failed".into())
     }
 }

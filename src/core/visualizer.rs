@@ -38,8 +38,11 @@ impl<'a> Visualizer<'a> {
         let beat_pulse = if self.config.dsp.is_beat { 1.3 } else { 1.0 };
 
         let note_pos = get_note_position(&self.config.dsp.spectrum, self.config.sample_rate);
-        let note_color =
-            interpolate_color(self.config.theme.accent, self.config.theme.critical, note_pos);
+        let note_color = interpolate_color(
+            self.config.theme.accent,
+            self.config.theme.critical,
+            note_pos,
+        );
 
         for y_row in 0..height {
             let mut spans = Vec::new();
@@ -61,7 +64,11 @@ impl<'a> Visualizer<'a> {
                 let dist = (norm_y - wave_y).abs();
 
                 let (char_str, color) = if dist < 0.015 * vol {
-                    let c = if self.config.dsp.is_beat { "█" } else { "●" };
+                    let c = if self.config.dsp.is_beat {
+                        "█"
+                    } else {
+                        "●"
+                    };
                     (c, interpolate_color(note_color, Color::White, 0.5))
                 } else if dist < 0.04 * vol {
                     ("○", note_color)

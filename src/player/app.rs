@@ -16,6 +16,7 @@ pub enum InputMode {
     Search,
     PlaylistSelect,
     Online,
+    Devices,
 }
 
 #[derive(Clone, Debug)]
@@ -73,11 +74,11 @@ impl Default for VisualizationState {
 }
 
 pub struct App<'a> {
-    pub all_tracks: Vec<Arc<TrackMetadata>>,
-    pub filtered_tracks: Vec<Arc<TrackMetadata>>,
+    pub all_tracks: Arc<Vec<Arc<TrackMetadata>>>,
+    pub filtered_tracks: Arc<Vec<Arc<TrackMetadata>>>,
     pub playlists: Vec<Playlist>,
     pub current_playlist: Option<Playlist>,
-    pub current_playlist_tracks: Option<Vec<Arc<TrackMetadata>>>,
+    pub current_playlist_tracks: Option<Arc<Vec<Arc<TrackMetadata>>>>,
     pub list_state: ListState,
     pub playlist_list_state: ListState,
     pub input_mode: InputMode,
@@ -87,7 +88,7 @@ pub struct App<'a> {
     pub filtered_stations: Vec<Arc<crate::core::models::RadioStation>>,
     pub radio_list_state: ListState,
     pub current_track: Option<Arc<TrackMetadata>>,
-    pub playback_track_list: Vec<Arc<TrackMetadata>>,
+    pub playback_track_list: Arc<Vec<Arc<TrackMetadata>>>,
     pub playing_idx: Option<usize>,
     pub is_playing: bool,
     pub is_starting: bool,
@@ -110,6 +111,7 @@ pub struct App<'a> {
     pub current_description: Option<String>,
     pub current_cover_art: Option<Vec<u8>>,
     pub cached_image: Option<image::DynamicImage>,
+    pub image_cache: std::collections::HashMap<String, image::DynamicImage>,
     pub image_state: Option<ratatui_image::protocol::StatefulProtocol>,
     pub image_picker: Option<ratatui_image::picker::Picker>,
     pub last_key_event: Option<(crossterm::event::KeyCode, std::time::Instant)>,
@@ -125,13 +127,18 @@ pub struct App<'a> {
     pub audio_clock: f64,
     pub radio_loaded: bool,
     pub visual_state: VisualizationState,
+    pub is_slave: bool,
+    pub remote_manager: Arc<crate::core::remote::RemoteManager>,
+    pub discovered_devices: Vec<crate::core::remote::DeviceInfo>,
 }
 
 impl<'a> App<'a> {
+    #[tracing::instrument(skip(self, img))]
     pub fn apply_theme_filter(&self, img: image::DynamicImage) -> image::DynamicImage {
+        tracing::trace!("Applying theme filter to image");
         let mut rgb_img = img.to_rgb8();
         let (tr, tg, tb) = crate::core::constants::color_to_rgb(self.theme.accent);
-        
+
         for pixel in rgb_img.pixels_mut() {
             let image::Rgb([r, g, b]) = *pixel;
             // Simple multiply tint
@@ -143,14 +150,27 @@ impl<'a> App<'a> {
         image::DynamicImage::ImageRgb8(rgb_img)
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn generate_radio_art(&mut self, name: &str) {
+        let accent_color = self.theme.accent;
+        let cache_key = format!("radio_{}_{:?}", name, accent_color);
+
+        if let Some(img) = self.image_cache.get(&cache_key) {
+            tracing::debug!(name, "Using cached radio art");
+            if let Some(picker) = &mut self.image_picker {
+                self.image_state = Some(picker.new_resize_protocol(img.clone()));
+            }
+            self.cached_image = Some(img.clone());
+            return;
+        }
+
+        tracing::info!(name, "Generating new radio art");
         let mut img = RgbImage::new(256, 256);
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         use std::hash::Hasher;
         hasher.write(name.as_bytes());
         let seed = hasher.finish();
 
-        let accent_color = self.theme.accent;
         let critical_color = self.theme.critical;
         let (ar, ag, ab) = crate::core::constants::color_to_rgb(accent_color);
         let (cr, cg, cb) = crate::core::constants::color_to_rgb(critical_color);
@@ -164,7 +184,7 @@ impl<'a> App<'a> {
 
                 let val = (dist * 0.1 + (angle * (3.0 + (seed % 5) as f32)).sin() * 10.0).sin();
                 let t = (0.5 + 0.5 * val) as f64;
-                
+
                 // Mix accent and critical based on the pattern
                 let r = (ar as f64 * (1.0 - t) + cr as f64 * t) as u8;
                 let g = (ag as f64 * (1.0 - t) + cg as f64 * t) as u8;
@@ -175,13 +195,20 @@ impl<'a> App<'a> {
         }
 
         let dynamic_img = image::DynamicImage::ImageRgb8(img);
+        self.image_cache.insert(cache_key, dynamic_img.clone());
         if let Some(picker) = &mut self.image_picker {
             self.image_state = Some(picker.new_resize_protocol(dynamic_img.clone()));
         }
         self.cached_image = Some(dynamic_img);
     }
 
-    pub async fn new(settings: &'a Settings, index: &'a LibraryIndex) -> ChordResult<App<'a>> {
+    #[tracing::instrument(skip(settings, index, remote_manager))]
+    pub async fn new(
+        settings: &'a Settings,
+        index: &'a LibraryIndex,
+        remote_manager: Arc<crate::core::remote::RemoteManager>,
+    ) -> ChordResult<App<'a>> {
+        tracing::info!("Creating new App instance");
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
         let (_refresh_tx, refresh_rx) = mpsc::unbounded_channel();
 
@@ -192,7 +219,7 @@ impl<'a> App<'a> {
             .library
             .music_dir
             .clone();
-        let _ = index.load_cache(&music_dir).await;
+        let _ = index.load_cache(&music_dir, false).await;
 
         let mut tracks = index.get_all_tracks().await;
         tracks.sort_by(|a, b| {
@@ -239,8 +266,8 @@ impl<'a> App<'a> {
             .to_theme();
 
         let app = App {
-            all_tracks: tracks.clone(),
-            filtered_tracks: tracks.clone(),
+            all_tracks: Arc::new(tracks.clone()),
+            filtered_tracks: Arc::new(tracks),
             playlists,
             current_playlist: None,
             current_playlist_tracks: None,
@@ -253,7 +280,7 @@ impl<'a> App<'a> {
             filtered_stations: Vec::new(),
             radio_list_state: ListState::default(),
             current_track: None,
-            playback_track_list: Vec::new(),
+            playback_track_list: Arc::new(Vec::new()),
             playing_idx: None,
             is_playing: false,
             is_starting: false,
@@ -281,6 +308,7 @@ impl<'a> App<'a> {
             current_description: None,
             current_cover_art: None,
             cached_image: None,
+            image_cache: std::collections::HashMap::new(),
             image_state: None,
             image_picker: ratatui_image::picker::Picker::from_query_stdio().ok(),
             last_key_event: None,
@@ -292,21 +320,26 @@ impl<'a> App<'a> {
             metadata_rx,
             metadata_tx,
             refresh_rx,
-            needs_redraw: true,
+            needs_redraw: false,
             audio_clock: 0.0,
             radio_loaded: false,
             visual_state: VisualizationState::default(),
+            is_slave: false,
+            remote_manager,
+            discovered_devices: Vec::new(),
         };
-
         Ok(app)
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn select_playlist(&mut self, playlist: Option<Playlist>) {
+        tracing::info!(playlist = ?playlist, "Selecting playlist");
         self.current_playlist = playlist.clone();
         if let Some(p) = playlist {
             let music_dir = match self.settings.config.read() {
                 Ok(c) => c.library.music_dir.clone(),
                 Err(e) => {
+                    tracing::error!(error = %e, "Config Error during playlist selection");
                     self.last_error = Some(format!("Config Error: {}", e));
                     return;
                 }
@@ -320,16 +353,29 @@ impl<'a> App<'a> {
                         .cmp(b.album.as_deref().unwrap_or("")),
                 )
             });
-            self.current_playlist_tracks = Some(tracks.clone());
-            self.filtered_tracks = tracks;
+            let arc_tracks = Arc::new(tracks);
+            self.current_playlist_tracks = Some(Arc::clone(&arc_tracks));
+            self.filtered_tracks = arc_tracks;
         } else {
             self.current_playlist_tracks = None;
-            self.filtered_tracks = Vec::new();
+            self.filtered_tracks = Arc::new(Vec::new());
         }
         self.filter_tracks();
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn refresh_library(&mut self) {
+        tracing::info!("Refreshing library");
+        let music_dir = match self.settings.config.read() {
+            Ok(c) => c.library.music_dir.clone(),
+            Err(e) => {
+                tracing::error!(error = %e, "Config Error during library refresh");
+                self.last_error = Some(format!("Config Error: {}", e));
+                return;
+            }
+        };
+        let _ = self.index.load_cache(&music_dir, true).await;
+
         let mut tracks = self.index.get_all_tracks().await;
         tracks.sort_by(|a, b| {
             a.artist.cmp(&b.artist).then(
@@ -339,7 +385,7 @@ impl<'a> App<'a> {
                     .cmp(b.album.as_deref().unwrap_or("")),
             )
         });
-        self.all_tracks = tracks.clone();
+        self.all_tracks = Arc::new(tracks);
 
         let p_rows = self.index.get_playlists().await;
         self.playlists = p_rows
@@ -468,8 +514,10 @@ impl<'a> App<'a> {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn play_radio(&mut self, idx: usize) {
         if let Some(station) = self.filtered_stations.get(idx) {
+            tracing::info!(name = %station.name, url = %station.url, "Playing radio station");
             let name = station.name.clone();
             let url = station.url.clone();
             let country = station.country.clone();
@@ -534,7 +582,6 @@ impl<'a> App<'a> {
                 .write()
                 .map_err(|e| ChordError::Internal(e.to_string()))?;
 
-            guard.audio.device_name = self.audio.device_name.lock().unwrap().clone();
             guard.audio.volume = self.volume;
             guard.audio.mode = self.audio.mode.lock().unwrap().clone();
 
@@ -552,7 +599,7 @@ impl<'a> App<'a> {
         Ok(())
     }
 
-
+    #[tracing::instrument(skip(self))]
     pub async fn update(&mut self) {
         if self.is_playing {
             let amp = self.audio.get_amplitude();
@@ -623,10 +670,12 @@ impl<'a> App<'a> {
         }
 
         while self.refresh_rx.try_recv().is_ok() {
+            tracing::debug!("Library refresh triggered via channel");
             let _ = self.refresh_library().await;
         }
 
         while let Ok(update) = self.metadata_rx.try_recv() {
+            tracing::debug!(idx = update.idx, "Received metadata update for track");
             if self.playing_idx == Some(update.idx) {
                 self.sample_rate = update.sample_rate;
                 self.channels = update.channels;
@@ -638,12 +687,46 @@ impl<'a> App<'a> {
                 self.current_cover_art = update.cover_art;
                 self.current_track_duration = update.duration;
 
-                if let Some(art) = &self.current_cover_art {
-                    if let Ok(img) = image::load_from_memory(art) {
-                        self.cached_image = Some(self.apply_theme_filter(img));
+                let mut keys_to_keep = std::collections::HashSet::new();
+
+                if let Some(track) = &self.current_track {
+                    let cache_key = format!("{}_{:?}", track.track_id, self.theme.accent);
+                    keys_to_keep.insert(cache_key.clone());
+
+                    // Add next and prev track ids to keys_to_keep to retain them
+                    if !self.playback_track_list.is_empty() {
+                        let len = self.playback_track_list.len();
+                        let idx = self.playing_idx.unwrap_or(0);
+                        let next_idx = (idx + 1) % len;
+                        let prev_idx = (idx + len - 1) % len;
+
+                        if let Some(next_t) = self.playback_track_list.get(next_idx) {
+                            keys_to_keep
+                                .insert(format!("{}_{:?}", next_t.track_id, self.theme.accent));
+                        }
+                        if let Some(prev_t) = self.playback_track_list.get(prev_idx) {
+                            keys_to_keep
+                                .insert(format!("{}_{:?}", prev_t.track_id, self.theme.accent));
+                        }
+                    }
+
+                    if let Some(img) = self.image_cache.get(&cache_key) {
+                        self.cached_image = Some(img.clone());
                         self.image_state = None;
+                    } else if let Some(art) = &self.current_cover_art {
+                        if let Ok(img) = image::load_from_memory(art) {
+                            let filtered = self.apply_theme_filter(img);
+                            self.image_cache.insert(cache_key, filtered.clone());
+                            self.cached_image = Some(filtered);
+                            self.image_state = None;
+                        }
                     }
                 }
+
+                // Retain only adjacent items and radio items (keep radio bounded or just keep current radio)
+                self.image_cache
+                    .retain(|k, _| k.starts_with("radio_") || keys_to_keep.contains(k));
+
                 self.needs_redraw = true;
             }
         }
@@ -692,7 +775,10 @@ impl<'a> App<'a> {
                         .playing_idx
                         .map(|i| (i + 1) % self.playback_track_list.len())
                         .unwrap_or(0);
-                    let _ = self.play_track(next);
+                    if let Some(track) = self.playback_track_list.get(next) {
+                        let track = track.clone();
+                        let _ = self.play_track_at(track, next, false);
+                    }
                 }
             }
         } else if self.is_playing
@@ -711,14 +797,17 @@ impl<'a> App<'a> {
                     .playing_idx
                     .map(|i| (i + 1) % self.playback_track_list.len())
                     .unwrap_or(0);
-                if has_error {
-                    let detail = self.audio.last_error.lock().unwrap().clone();
-                    self.last_error = Some(format!(
-                        "SKIPPING BROKEN TRACK: {}",
-                        detail.unwrap_or_default()
-                    ));
+                if let Some(track) = self.playback_track_list.get(next) {
+                    let track = track.clone();
+                    if has_error {
+                        let detail = self.audio.last_error.lock().unwrap().clone();
+                        self.last_error = Some(format!(
+                            "SKIPPING BROKEN TRACK: {}",
+                            detail.unwrap_or_default()
+                        ));
+                    }
+                    let _ = self.play_track_at(track, next, false);
                 }
-                let _ = self.play_track(next);
             } else if has_error {
                 // For radio, try to reconnect by re-triggering play_radio if it was a real error
                 if let Some(track) = &self.current_track {
@@ -727,11 +816,21 @@ impl<'a> App<'a> {
                         .iter()
                         .position(|s| s.name == track.title)
                     {
-                        let _ = self.play_radio(idx);
+                        self.play_radio(idx);
                     }
                 }
             }
         }
+
+        // Refresh discovered devices list periodically
+        if let Ok(devices) = self.remote_manager.discovered_devices.try_read() {
+            let new_devices: Vec<_> = devices.values().cloned().collect();
+            if new_devices.len() != self.discovered_devices.len() {
+                self.discovered_devices = new_devices;
+                self.needs_redraw = true;
+            }
+        }
+
         self.needs_redraw = true;
     }
 
@@ -763,14 +862,30 @@ impl<'a> App<'a> {
         self.list_state.select(Some(i));
     }
 
+    #[tracing::instrument(skip(self))]
     pub fn play_track(&mut self, idx: usize) -> ChordResult<()> {
-        self.is_playing = false;
-        self.is_starting = true;
         let track = self
             .filtered_tracks
             .get(idx)
-            .ok_or_else(|| ChordError::Playback("Track not found".into()))?
+            .ok_or_else(|| {
+                tracing::error!(idx, "Track index out of bounds");
+                ChordError::Playback("Track not found".into())
+            })?
             .clone();
+        tracing::info!(title = %track.title, "Play track requested");
+        self.play_track_at(track, idx, true)
+    }
+
+    #[tracing::instrument(skip(self, track))]
+    fn play_track_at(
+        &mut self,
+        track: Arc<TrackMetadata>,
+        idx: usize,
+        update_playback_list: bool,
+    ) -> ChordResult<()> {
+        tracing::info!(title = %track.title, path = ?track.file_path, "Starting playback");
+        self.is_playing = false;
+        self.is_starting = true;
 
         self.current_genre = None;
         self.current_label = None;
@@ -788,7 +903,9 @@ impl<'a> App<'a> {
                 self.is_playing = true;
                 self.playing_idx = Some(idx);
                 self.current_track = Some(track.clone());
-                self.playback_track_list = self.filtered_tracks.clone();
+                if update_playback_list {
+                    self.playback_track_list = Arc::clone(&self.filtered_tracks);
+                }
                 self.accumulated_pos = Duration::from_secs(0);
                 self.current_pos = Duration::from_secs(0);
                 self.playback_start = Some(Instant::now());
@@ -851,12 +968,14 @@ impl<'a> App<'a> {
         }
     }
 
+    #[tracing::instrument(skip(self))]
     pub async fn toggle_playback(&mut self) {
         if self.audio.is_empty() {
+            tracing::debug!("Toggle playback: audio empty, starting selected");
             match self.input_mode {
                 InputMode::Online => {
                     if let Some(idx) = self.radio_list_state.selected() {
-                        let _ = self.play_radio(idx);
+                        self.play_radio(idx);
                     }
                 }
                 _ => {
@@ -867,6 +986,7 @@ impl<'a> App<'a> {
             }
         } else {
             if self.is_playing {
+                tracing::info!("Pausing playback");
                 self.audio.pause();
                 self.is_playing = false;
                 if let Some(start) = self.playback_start {
@@ -874,6 +994,7 @@ impl<'a> App<'a> {
                 }
                 self.playback_start = None;
             } else {
+                tracing::info!("Resuming playback");
                 self.audio.resume();
                 self.is_playing = true;
                 self.playback_start = Some(Instant::now());
@@ -888,13 +1009,14 @@ impl<'a> App<'a> {
             .as_ref()
             .unwrap_or(&self.all_tracks);
         if query.is_empty() {
-            self.filtered_tracks = source.clone();
+            self.filtered_tracks = Arc::clone(source);
         } else {
-            self.filtered_tracks = source
+            let filtered: Vec<_> = source
                 .iter()
                 .filter(|t| t.search_key.contains(&query))
                 .cloned()
                 .collect();
+            self.filtered_tracks = Arc::new(filtered);
         }
         if self.filtered_tracks.is_empty() {
             self.list_state.select(None);

@@ -2,7 +2,9 @@ use crossterm::event::KeyCode;
 use ratatui::style::Color;
 
 // --- APPLICATION CONSTANTS ---
-pub const DEFAULT_TICK_RATE_MS: u64 = 50;
+pub const KEY_DEVICES_MODE: KeyCode = KeyCode::Char('d');
+pub const DEFAULT_TICK_RATE_MS: u64 = 16;
+
 pub const KEY_DEBOUNCE_MS: u128 = 100;
 
 // --- THEME ---
@@ -33,6 +35,7 @@ pub const KEY_VOL_DOWN: KeyCode = KeyCode::Char('o');
 
 pub const KEY_SEARCH_MODE: KeyCode = KeyCode::Char('/');
 pub const KEY_PLAYLIST_MODE: KeyCode = KeyCode::Tab;
+pub const KEY_REFRESH: KeyCode = KeyCode::Char('r');
 pub const KEY_RADIO_MODE: KeyCode = KeyCode::Char('r'); // Used with Ctrl
 
 pub const KEY_LIST_UP: KeyCode = KeyCode::Up;

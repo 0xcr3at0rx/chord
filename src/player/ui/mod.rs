@@ -62,6 +62,42 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .fg(app.theme.cursor_fg),
                 );
             f.render_stateful_widget(sidebar, content_layout[0], &mut app.playlist_list_state);
+        } else if effective_mode == InputMode::Devices {
+            let mut items = Vec::new();
+            
+            // Local Device
+            items.push(ListItem::new(Line::from(vec![
+                Span::styled(" 󰓃 ", Style::default().fg(app.theme.accent)),
+                Span::styled("LOCAL DEVICE (this)", Style::default().fg(app.theme.fg)),
+            ])));
+
+            // Discovered Devices
+            for device in &app.discovered_devices {
+                items.push(ListItem::new(vec![
+                    Line::from(vec![
+                        Span::styled(" 󰓃 ", Style::default().fg(app.theme.dim)),
+                        Span::styled(&device.name, Style::default().fg(app.theme.fg)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled(format!("    ID: {} ", if device.id.len() > 8 { &device.id[..8] } else { &device.id }), Style::default().fg(app.theme.dim)),
+                        Span::styled(format!("@ {}", device.address), Style::default().fg(app.theme.accent_dim)),
+                    ]),
+                ]));
+            }
+
+            let sidebar = List::new(items)
+                .block(
+                    Block::default()
+                        .borders(Borders::RIGHT)
+                        .border_style(Style::default().fg(app.theme.status_bg))
+                        .title(Span::styled(" DEVICES ", Style::default().fg(app.theme.accent).add_modifier(Modifier::BOLD))),
+                )
+                .highlight_style(
+                    Style::default()
+                        .bg(app.theme.cursor_bg)
+                        .fg(app.theme.cursor_fg),
+                );
+            f.render_stateful_widget(sidebar, content_layout[0], &mut app.list_state);
         } else if effective_mode == InputMode::Online {
             let mut items = Vec::new();
             for station in &app.filtered_stations {
@@ -193,9 +229,12 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             let items: Vec<ListItem> = app
                 .filtered_tracks
                 .iter()
-                .enumerate()
-                .map(|(i, t)| {
-                    let is_playing = app.playing_idx == Some(i);
+                .map(|t| {
+                    let is_playing = app
+                        .current_track
+                        .as_ref()
+                        .map(|ct| ct.track_id == t.track_id)
+                        .unwrap_or(false);
                     let style = if is_playing {
                         Style::default()
                             .fg(app.theme.accent)
@@ -565,6 +604,19 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                 .bg(Color::Blue)
                 .add_modifier(Modifier::BOLD),
         ),
+        InputMode::Devices => (
+            " DEVICES ",
+            Style::default()
+                .fg(app.theme.bg)
+                .bg(app.theme.accent_dim)
+                .add_modifier(Modifier::BOLD),
+        ),
+    };
+
+    let remote_indicator = if app.is_slave {
+        Span::styled(" REMOTE CONTROL ACTIVE ", Style::default().fg(app.theme.bg).bg(app.theme.accent).add_modifier(Modifier::BOLD))
+    } else {
+        Span::raw("")
     };
 
     f.render_widget(
@@ -576,7 +628,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
 
     let (mid_text, mid_style) = if let Some(err) = &app.last_error {
         (
-            format!(" ERROR: {} ", err),
+            Line::from(format!(" ERROR: {} ", err)),
             Style::default()
                 .fg(Color::White)
                 .bg(app.theme.critical)
@@ -584,30 +636,37 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         )
     } else if app.input_mode == InputMode::Search {
         (
-            format!(" / {} ", app.search_query),
+            Line::from(format!(" / {} ", app.search_query)),
             Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
         )
     } else if app.input_mode == InputMode::Online {
         (
-            " STATIONS ".to_string(),
+            Line::from(" STATIONS "),
+            Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
+        )
+    } else if app.input_mode == InputMode::Devices {
+        (
+            Line::from(" DISCOVERING LOCAL DEVICES... "),
             Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
         )
     } else if let Some(track) = &app.current_track {
         (
-            format!(" Playing: {} - {} ", track.artist, track.title),
+            Line::from(vec![
+                Span::raw(" Playing: "),
+                Span::styled(format!("{} - {}", track.artist, track.title), Style::default().add_modifier(Modifier::BOLD)),
+                Span::raw(" "),
+                remote_indicator,
+            ]),
             Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
         )
     } else {
         (
-            " CHORD - LIBRARY ".to_string(),
+            Line::from(" CHORD - LIBRARY "),
             Style::default().fg(app.theme.fg).bg(app.theme.status_bg),
         )
     };
 
-    f.render_widget(
-        Paragraph::new(mid_text).style(mid_style),
-        status_chunks[1],
-    );
+    f.render_widget(Paragraph::new(mid_text).style(mid_style), status_chunks[1]);
 
     let duration_str = if is_radio {
         " --:-- / --:-- ".to_string()

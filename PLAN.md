@@ -53,9 +53,36 @@ The Chord Protocol is a custom binary protocol designed for low-latency control 
 - [ ] **Network Adaptation**: Auto-switch between High-Res (FLAC) and High-Efficiency (MP3) based on link quality.
 - [ ] **Plugin System**: VST/AU support for remote DSP processing.
 
+### Phase 5: Social Connectivity (LAN Social Listening)
+- [ ] **Protobuf-Driven Local Orchestration**:
+    - [ ] **Local Discovery**: Extend UDP broadcast to announce active social sessions on the local network.
+    - [ ] **Signaling**: Use Protobuf-encoded `Handshake` messages for authenticated peer discovery over LAN.
+    - [ ] **Automated Session Entry**: Simple Invite Tokens (Base64) encoding the host's local IP and session ID for "One-Click Join."
+- [ ] **Local Audio Relaying (Mesh-Lite)**:
+    - [ ] **Traffic Optimization**: Allow peers to relay high-fidelity audio streams to others on the same subnet to reduce host load.
+- [ ] **Resilient State & Sync**:
+    - [ ] **CRDT Implementation**: Use a G-Counter for playback position and an LWW-Map for the shared queue to prevent desync.
+    - [ ] **Host Migration**: If the host leaves, the session seamlessly migrates to another peer on the LAN.
+    - [ ] **Precision Sync**: Continuous sub-millisecond clock adjustment optimized for low-latency LAN conditions.
+
 ---
 
+## Technical Specifications: Protocol & Security
+- **Identity & Security**:
+    - **Peer Authentication**: Ed25519-based signing of Protobuf messages (still used for identity verification on local networks).
+- **Network Strategy**:
+    - **UDP/TCP Multicast**: Primary discovery mechanism for active sessions.
+    - **Direct TCP**: High-reliability control and audio transport over the local subnet.
+- **Consistency Model**:
+    - **Eventual Consistency**: Queue operations are gossiped across the local mesh.
+    - **Strong Consistency**: Playback triggers (Play/Pause) use a low-latency "Ack-Wait" from peers.
+
+## Verification & Quality Assurance
+- [ ] **Local Mesh Testing**: Verify synchronization stability with 10+ devices on a single router.
+- [ ] **CRDT Fuzzing**: Randomized operation sequences to verify queue convergence.
+- [ ] **Sync Benchmarks**: Achieve <10ms drift on standard Wi-Fi/Ethernet.
+
 ## Technical Debt & Maintenance
-- [ ] Refactor `run_app` to use a proper state machine for mode transitions.
-- [ ] Implement unit tests for the Protobuf message handlers.
-- [ ] Optimize the visualizer for high-refresh-rate displays.
+- [ ] **State Machine Refactor**: Transition `run_app` to a `TransitionState` enum to handle "Social", "Remote", and "Local" modes cleanly.
+- [ ] **Protobuf Documentation**: Auto-generate documentation for the `remote.proto` specification.
+- [ ] **Visualizer Performance**: Implement a SIMD-optimized FFT for the real-time visualizer.

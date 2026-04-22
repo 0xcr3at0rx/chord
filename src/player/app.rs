@@ -130,6 +130,7 @@ pub struct App<'a> {
     pub visual_state: VisualizationState,
     pub is_slave: bool,
     pub remote_manager: Arc<crate::core::remote::RemoteManager>,
+    pub social_manager: Arc<crate::core::social::SocialManager>,
     pub discovered_devices: Vec<crate::core::remote::DeviceInfo>,
 }
 
@@ -203,11 +204,12 @@ impl<'a> App<'a> {
         self.cached_image = Some(dynamic_img);
     }
 
-    #[tracing::instrument(skip(settings, index, remote_manager))]
+    #[tracing::instrument(skip(settings, index, remote_manager, social_manager))]
     pub async fn new(
         settings: &'a Settings,
         index: &'a LibraryIndex,
         remote_manager: Arc<crate::core::remote::RemoteManager>,
+        social_manager: Arc<crate::core::social::SocialManager>,
     ) -> ChordResult<App<'a>> {
         tracing::info!("Creating new App instance");
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
@@ -328,6 +330,7 @@ impl<'a> App<'a> {
             visual_state: VisualizationState::default(),
             is_slave: false,
             remote_manager,
+            social_manager,
             discovered_devices: Vec::new(),
         };
         Ok(app)

@@ -13,9 +13,8 @@ pub mod pb {
     include!(concat!(env!("OUT_DIR"), "/remote.rs"));
 }
 
-pub use pb::{RemoteCommand, RemoteStatus, DeviceInfo, RemoteEvent, BrowseResponse, SyncResponse};
+pub use pb::{RemoteCommand, RemoteStatus, DeviceInfo, RemoteEvent, SyncResponse};
 pub use pb::remote_command::Command;
-pub use pb::remote_event::Event;
 
 pub struct RemoteManager {
     pub status: Arc<RwLock<RemoteStatus>>,

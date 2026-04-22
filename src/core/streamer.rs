@@ -4,7 +4,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::net::TcpStream;
 use rodio::{Decoder, Source};
-use crate::core::remote::{RemoteManager, Command, pb};
+use crate::core::remote::{RemoteManager, Command};
 use crate::core::remote::pb::{StreamSetup, StreamData, AudioFormat};
 use tokio::sync::mpsc;
 

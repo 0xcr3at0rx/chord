@@ -32,6 +32,7 @@ message RemoteCommand {
     // System
     Capabilities capabilities = 12;
     SyncRequest sync_request = 16;
+    SessionRequest session_request = 18;
   }
 }
 
@@ -85,6 +86,7 @@ message RemoteEvent {
     BrowseResponse browse_response = 2;
     SyncResponse sync_response = 3;
     string error_message = 4;
+    SessionStatus session_status = 5;
   }
 }
 
@@ -231,4 +233,47 @@ message SyncRequest {
 message SyncResponse {
   uint64 client_time_us = 1;
   uint64 server_time_us = 2;
+}
+
+// -------------------------------------------------------------------
+// 7. Social Listening (Phase 5)
+// -------------------------------------------------------------------
+
+message SessionRequest {
+  enum Action {
+    CREATE = 0;
+    JOIN = 1;
+    LEAVE = 2;
+    UPDATE_STATE = 3;
+    HANDSHAKE = 4;
+  }
+  Action action = 1;
+  string session_id = 2;
+  string invite_token = 3;
+  string peer_name = 4;
+  
+  // Authentication & NAT Discovery
+  bytes public_key = 5;      // Ed25519 Public Key
+  bytes signature = 6;       // Signature for verification
+  string public_ip = 7;      // Discovered via STUN
+  uint32 public_port = 8;
+}
+
+message SessionStatus {
+  string session_id = 1;
+  string host_id = 2;
+  repeated PeerInfo peers = 3;
+  uint64 start_timestamp_us = 4;
+}
+
+message PeerInfo {
+  string id = 1;
+  string name = 2;
+  bool is_host = 3;
+  uint64 latency_us = 4;
+  
+  // Connectivity info
+  string public_ip = 5;
+  uint32 public_port = 6;
+  bytes public_key = 7;
 }

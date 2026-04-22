@@ -21,17 +21,18 @@ pub mod app;
 pub mod audio;
 pub mod ui;
 
-use crate::core::remote::{self, Command, RemoteManager, RemoteEvent, pb};
+use crate::core::remote::{Command, RemoteManager, RemoteEvent};
 use crate::core::remote::pb::remote_event::Event as PbEvent;
 use tokio::sync::mpsc::UnboundedReceiver;
 use prost::Message;
 use tokio::io::AsyncReadExt;
 
-#[tracing::instrument(skip(settings, index, remote_manager, remote_cmd_rx))]
+#[tracing::instrument(skip(settings, index, remote_manager, social_manager, remote_cmd_rx))]
 pub async fn run_player(
     settings: Arc<Settings>,
     index: Arc<LibraryIndex>,
     remote_manager: Arc<RemoteManager>,
+    social_manager: Arc<crate::core::social::SocialManager>,
     remote_cmd_rx: UnboundedReceiver<Command>,
 ) -> ChordResult<()> {
     tracing::info!("Initializing TUI and starting player");
@@ -52,7 +53,7 @@ pub async fn run_player(
         })?;
 
     // Pass references to App
-    let mut app = App::new(&settings, &index, remote_manager).await?;
+    let mut app = App::new(&settings, &index, remote_manager, social_manager).await?;
     app.needs_redraw = true;
 
     tracing::info!("Starting application loop");
@@ -172,6 +173,10 @@ async fn run_app<B: Backend>(
                     // TODO: Implement sync request
                     tracing::info!("Received SyncRequest command");
                 }
+                Command::SessionRequest(req) => {
+                    tracing::info!("Received SessionRequest: {:?}", req);
+                    // TODO: Implement Social Listening session management
+                }
             }
         }
 
@@ -204,6 +209,10 @@ async fn run_app<B: Backend>(
                         PbEvent::ErrorMessage(msg) => {
                             tracing::error!("Remote Error: {}", msg);
                             app.last_error = Some(format!("Remote Error: {}", msg));
+                        }
+                        PbEvent::SessionStatus(status) => {
+                            tracing::info!("Received SessionStatus: {:?}", status);
+                            // TODO: Update UI with session info
                         }
                     }
                 }

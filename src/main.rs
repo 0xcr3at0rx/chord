@@ -23,7 +23,9 @@ async fn main() -> anyhow::Result<()> {
     };
 
     let remote_manager =
-        Arc::new(core::remote::RemoteManager::new(device_id, device_name, disable_broadcast));
+        Arc::new(core::remote::RemoteManager::new(device_id.clone(), device_name.clone(), disable_broadcast));
+
+    let social_manager = Arc::new(core::social::SocialManager::new(device_id, device_name));
 
     // Channel for receiving remote commands
     let (remote_cmd_tx, remote_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -32,7 +34,7 @@ async fn main() -> anyhow::Result<()> {
     remote_manager.start_services(remote_cmd_tx, index.clone()).await?;
 
     // Always run as a potential player and controller
-    if let Err(e) = player::run_player(settings, index, remote_manager, remote_cmd_rx).await {
+    if let Err(e) = player::run_player(settings, index, remote_manager, social_manager, remote_cmd_rx).await {
         eprintln!("FATAL ERROR: {}", e);
         std::process::exit(1);
     }

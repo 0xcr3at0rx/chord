@@ -36,33 +36,12 @@ pub struct ThemeConfig {
     pub status_bg: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default)]
-pub struct RemoteConfig {
-    pub device_name: String,
-    pub device_id: String,
-    pub disable_broadcast: bool,
-}
-
-impl Default for RemoteConfig {
-    fn default() -> Self {
-        Self {
-            device_name: hostname::get()
-                .map(|h| h.to_string_lossy().to_string())
-                .unwrap_or_else(|_| "Chord Device".to_string()),
-            device_id: uuid::Uuid::new_v4().to_string(),
-            disable_broadcast: false,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
     pub library: LibraryConfig,
     pub audio: AudioConfig,
     pub theme: ThemeConfig,
-    pub remote: RemoteConfig,
 }
 
 impl Default for ThemeConfig {
@@ -125,7 +104,7 @@ impl Default for AudioConfig {
             volume: 1.0,
             mode: "PIPEWIRE".to_string(),
             sample_rate: 48000,
-            buffer_ms: 100,
+            buffer_ms: 200,
             resample_quality: 4,
             bit_depth: 32,
         }

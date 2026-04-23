@@ -16,21 +16,25 @@ pub struct Visualizer<'a> {
     pub config: VisualizerConfig<'a>,
 }
 
+/// Fast bitwise absolute value for f64
+#[inline(always)]
+fn xor_abs_f64(f: f64) -> f64 {
+    f64::from_bits(f.to_bits() & 0x7FFFFFFFFFFFFFFF)
+}
+
 impl<'a> Visualizer<'a> {
     pub fn new(config: VisualizerConfig<'a>) -> Self {
         Self { config }
     }
 
     pub fn render(&self) -> Vec<Line<'static>> {
-        let mut lines = Vec::new();
         let width = self.config.width;
         let height = self.config.height;
 
         if !self.config.is_playing {
-            for _ in 0..height {
-                lines.push(Line::from(" ".repeat(width as usize)));
-            }
-            return lines;
+            return (0..height)
+                .map(|_| Line::from(" ".repeat(width as usize)))
+                .collect();
         }
 
         let amplitude = self.config.dsp.amplitude as f64;
@@ -44,54 +48,54 @@ impl<'a> Visualizer<'a> {
             note_pos,
         );
 
-        for y_row in 0..height {
-            let mut spans = Vec::new();
-            let norm_y = (height as f64 - 1.0 - y_row as f64) / height as f64;
+        let color_beat = interpolate_color(note_color, Color::White, 0.5);
+        let color_mid = note_color;
+        let color_tail = interpolate_color(note_color, Color::Black, 0.6);
+        let char_beat = if self.config.dsp.is_beat { "█" } else { "●" };
 
-            for i in 0..width {
-                let norm_x = i as f64 / width as f64;
-
-                let wave_idx = (norm_x * (self.config.dsp.waveform.len() as f64 - 1.0)) as usize;
-                let sample = self
-                    .config
-                    .dsp
-                    .waveform
-                    .get(wave_idx)
-                    .cloned()
-                    .unwrap_or(0.0) as f64;
-                let wave_y = sample * 0.45 * vol * beat_pulse + 0.5;
-
-                let dist = (norm_y - wave_y).abs();
-
-                let (char_str, color) = if dist < 0.015 * vol {
-                    let c = if self.config.dsp.is_beat {
-                        "█"
-                    } else {
-                        "●"
-                    };
-                    (c, interpolate_color(note_color, Color::White, 0.5))
-                } else if dist < 0.04 * vol {
-                    ("○", note_color)
-                } else if dist < 0.08 * vol {
-                    ("·", interpolate_color(note_color, Color::Black, 0.6))
-                } else if (norm_y - 0.5).abs() < 0.005 {
-                    ("─", self.config.theme.dim)
-                } else {
-                    (" ", Color::Reset)
-                };
-
-                spans.push(Span::styled(char_str, Style::default().fg(color)));
-            }
-
-            let mut line_spans = spans;
-            let current_len: usize = line_spans.len();
-            if current_len < width as usize {
-                line_spans.push(Span::raw(" ".repeat(width as usize - current_len)));
-            }
-            lines.push(Line::from(line_spans));
+        let waveform_len = self.config.dsp.waveform.len() as f64 - 1.0;
+        let mut wave_ys = Vec::with_capacity(width as usize);
+        for i in 0..width {
+            let norm_x = i as f64 / width as f64;
+            let wave_idx = (norm_x * waveform_len) as usize;
+            let sample = self
+                .config
+                .dsp
+                .waveform
+                .get(wave_idx)
+                .cloned()
+                .unwrap_or(0.0) as f64;
+            wave_ys.push(sample * 0.45 * vol * beat_pulse + 0.5);
         }
 
-        lines
+        // Render rows serially to avoid thread overhead causing audio underruns
+        (0..height)
+            .map(|y_row| {
+                let mut spans = Vec::with_capacity(width as usize);
+                let norm_y = (height as f64 - 1.0 - y_row as f64) / height as f64;
+                let axis_dist = xor_abs_f64(norm_y - 0.5);
+
+                for i in 0..width {
+                    let dist = xor_abs_f64(norm_y - wave_ys[i as usize]);
+
+                    let (char_str, color) = if dist < 0.015 * vol {
+                        (char_beat, color_beat)
+                    } else if dist < 0.04 * vol {
+                        ("○", color_mid)
+                    } else if dist < 0.08 * vol {
+                        ("·", color_tail)
+                    } else if axis_dist < 0.005 {
+                        ("─", self.config.theme.dim)
+                    } else {
+                        (" ", Color::Reset)
+                    };
+
+                    spans.push(Span::styled(char_str, Style::default().fg(color)));
+                }
+
+                Line::from(spans)
+            })
+            .collect()
     }
 }
 

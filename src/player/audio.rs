@@ -139,7 +139,7 @@ where
 {
     inner: S,
     sample_tx: channel::SyncSender<f32>,
-    amplitude: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    sample_counter: u32,
 }
 
 impl<S> rodio::Source for VisualizerTracker<S>
@@ -168,17 +168,12 @@ where
 
     fn next(&mut self) -> Option<Self::Item> {
         let sample = self.inner.next()?;
-        let val = sample.abs();
 
-        // Send sample to analyzer
-        let _ = self.sample_tx.try_send(sample);
-
-        // Simple exponential moving average for smoothing (legacy support)
-        let current_bits = self.amplitude.load(std::sync::atomic::Ordering::Relaxed);
-        let current = f32::from_bits(current_bits);
-        let new_val = current * 0.85 + val * 0.15;
-        self.amplitude
-            .store(new_val.to_bits(), std::sync::atomic::Ordering::Relaxed);
+        // Send every 4th sample to analyzer to reduce overhead and prevent underruns
+        self.sample_counter = (self.sample_counter + 1) % 4;
+        if self.sample_counter == 0 {
+            let _ = self.sample_tx.try_send(sample);
+        }
 
         Some(sample)
     }
@@ -188,50 +183,10 @@ enum AudioCmd {
     Init,
     Play(PathBuf),
     PlayStream(String, u64),
-    PlayRaw(mpsc::Receiver<Vec<f32>>, u32, u16), // samples_rx, sample_rate, channels
     SetVolume(f32),
     Pause,
     Resume,
-    Stop,
     RegisterRadioSink(Sink, u64),
-}
-
-struct RawSource {
-    samples_rx: mpsc::Receiver<Vec<f32>>,
-    current_chunk: Vec<f32>,
-    read_pos: usize,
-    sample_rate: u32,
-    channels: u16,
-}
-
-impl Iterator for RawSource {
-    type Item = f32;
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.read_pos >= self.current_chunk.len() {
-            match self.samples_rx.try_recv() {
-                Ok(chunk) => {
-                    self.current_chunk = chunk;
-                    self.read_pos = 0;
-                }
-                Err(_) => return Some(0.0), // Fill with silence if buffer empty
-            }
-        }
-        
-        if self.read_pos < self.current_chunk.len() {
-            let s = self.current_chunk[self.read_pos];
-            self.read_pos += 1;
-            Some(s)
-        } else {
-            Some(0.0)
-        }
-    }
-}
-
-impl rodio::Source for RawSource {
-    fn current_frame_len(&self) -> Option<usize> { None }
-    fn channels(&self) -> u16 { self.channels }
-    fn sample_rate(&self) -> u32 { self.sample_rate }
-    fn total_duration(&self) -> Option<Duration> { None }
 }
 
 pub struct AudioPlayer {
@@ -241,7 +196,6 @@ pub struct AudioPlayer {
     pub is_initializing: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub mode: std::sync::Arc<std::sync::Mutex<String>>,
     pub last_error: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    pub amplitude: std::sync::Arc<std::sync::atomic::AtomicU32>,
     pub dsp_state: std::sync::Arc<std::sync::RwLock<DspState>>,
 }
 
@@ -249,14 +203,12 @@ struct AudioBackend {
     stream: Option<OutputStream>,
     handle: Option<OutputStreamHandle>,
     sink: Option<Sink>,
-    radio_sink: Option<Sink>,
     volume: f32,
-    active_radio_request_id: u64,
+    active_request_id: u64,
     is_empty_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     has_error_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    amplitude_shared: std::sync::Arc<std::sync::atomic::AtomicU32>,
     sample_tx: channel::SyncSender<f32>,
 }
 
@@ -271,7 +223,6 @@ impl AudioPlayer {
         let is_initializing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let mode = std::sync::Arc::new(std::sync::Mutex::new("PIPEWIRE".into()));
         let last_error = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let amplitude = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0.0f32.to_bits()));
 
         let mut analyzer = AudioAnalyzer::new();
         let dsp_state = analyzer.state.clone();
@@ -280,7 +231,6 @@ impl AudioPlayer {
         let backend_error = has_error.clone();
         let backend_init = is_initializing.clone();
         let backend_last_err = last_error.clone();
-        let backend_amplitude = amplitude.clone();
         let backend_tx = tx.clone();
 
         // Start Analyzer thread
@@ -293,8 +243,8 @@ impl AudioPlayer {
                         // Sliding window: process current buffer
                         analyzer.process_samples(&samples_buf);
 
-                        // Shift buffer by HOP_SIZE (512)
-                        let hop = 512;
+                        // Shift buffer by HOP_SIZE (256)
+                        let hop = 256;
                         if samples_buf.len() > hop {
                             samples_buf.drain(0..hop);
                         } else {
@@ -311,14 +261,12 @@ impl AudioPlayer {
                 stream: None,
                 handle: None,
                 sink: None,
-                radio_sink: None,
                 volume: 1.0,
-                active_radio_request_id: 0,
+                active_request_id: 0,
                 is_empty_shared: backend_empty,
                 has_error_shared: backend_error,
                 is_initializing_shared: backend_init,
                 last_error_shared: backend_last_err,
-                amplitude_shared: backend_amplitude,
                 sample_tx: backend_sample_tx_clone,
             };
 
@@ -348,6 +296,7 @@ impl AudioPlayer {
                     }
                     Ok(AudioCmd::Play(path)) => {
                         tracing::debug!(path = ?path, "AudioCmd::Play received");
+                        backend.active_request_id = 0; // Local playback doesn't need async registration
                         let res = backend.play(path);
                         if let Err(e) = &res {
                             *backend.last_error_shared.lock().unwrap() = Some(e.clone());
@@ -361,7 +310,7 @@ impl AudioPlayer {
                     Ok(AudioCmd::PlayStream(url, request_id)) => {
                         tracing::info!(url = %url, request_id, "AudioCmd::PlayStream received");
                         backend.stop_sink();
-                        backend.active_radio_request_id = request_id;
+                        backend.active_request_id = request_id;
 
                         // Ensure we have a handle before spawning radio thread
                         if backend.handle.is_none() {
@@ -373,7 +322,6 @@ impl AudioPlayer {
                         let volume = backend.volume;
                         let last_error_shared = backend.last_error_shared.clone();
                         let has_error_shared = backend.has_error_shared.clone();
-                        let amplitude_shared_thread = backend.amplitude_shared.clone();
 
                         let sample_tx_clone = backend.sample_tx.clone();
 
@@ -409,8 +357,8 @@ impl AudioPlayer {
                                         let source = rodio::Source::convert_samples::<f32>(source);
                                         let source = VisualizerTracker {
                                             inner: source,
-                                            amplitude: amplitude_shared_thread.clone(),
                                             sample_tx: sample_tx_clone.clone(),
+                                            sample_counter: 0,
                                         };
                                         let sink = Sink::try_new(&handle)
                                             .map_err(|e| format!("Sink: {}", e))?;
@@ -449,35 +397,10 @@ impl AudioPlayer {
                             }
                         });
                     }
-                    Ok(AudioCmd::PlayRaw(rx, sample_rate, channels)) => {
-                        tracing::info!(sample_rate, channels, "AudioCmd::PlayRaw received (streaming)");
-                        backend.stop_sink();
-                        if let Some(handle) = &backend.handle {
-                            let source = RawSource {
-                                samples_rx: rx,
-                                current_chunk: Vec::new(),
-                                read_pos: 0,
-                                sample_rate,
-                                channels,
-                            };
-                            let source = VisualizerTracker {
-                                inner: source,
-                                amplitude: backend.amplitude_shared.clone(),
-                                sample_tx: backend.sample_tx.clone(),
-                            };
-                            if let Ok(sink) = Sink::try_new(handle) {
-                                sink.set_volume(backend.volume);
-                                sink.append(source);
-                                sink.play();
-                                backend.sink = Some(sink);
-                                backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
-                            }
-                        }
-                    }
                     Ok(AudioCmd::RegisterRadioSink(sink, request_id)) => {
                         tracing::debug!(request_id, "AudioCmd::RegisterRadioSink received");
-                        if request_id == backend.active_radio_request_id {
-                            backend.radio_sink = Some(sink);
+                        if request_id == backend.active_request_id {
+                            backend.sink = Some(sink);
                             backend
                                 .is_empty_shared
                                 .store(false, std::sync::atomic::Ordering::Relaxed);
@@ -491,16 +414,10 @@ impl AudioPlayer {
                         if let Some(s) = &backend.sink {
                             s.set_volume(v);
                         }
-                        if let Some(s) = &backend.radio_sink {
-                            s.set_volume(v);
-                        }
                     }
                     Ok(AudioCmd::Pause) => {
                         tracing::info!("AudioCmd::Pause received");
                         if let Some(s) = &backend.sink {
-                            s.pause();
-                        }
-                        if let Some(s) = &backend.radio_sink {
                             s.pause();
                         }
                     }
@@ -509,25 +426,13 @@ impl AudioPlayer {
                         if let Some(s) = &backend.sink {
                             s.play();
                         }
-                        if let Some(s) = &backend.radio_sink {
-                            s.play();
-                        }
-                    }
-                    Ok(AudioCmd::Stop) => {
-                        tracing::info!("AudioCmd::Stop received");
-                        backend.stop_sink();
                     }
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
 
                 backend.is_empty_shared.store(
-                    backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true)
-                        && backend
-                            .radio_sink
-                            .as_ref()
-                            .map(|s| s.empty())
-                            .unwrap_or(true),
+                    backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true),
                     std::sync::atomic::Ordering::Relaxed,
                 );
             }
@@ -540,7 +445,6 @@ impl AudioPlayer {
             is_initializing,
             mode,
             last_error,
-            amplitude,
             dsp_state,
         }
     }
@@ -571,12 +475,6 @@ impl AudioPlayer {
         let _ = self.cmd_tx.send(AudioCmd::PlayStream(url, request_id));
     }
 
-    pub fn play_raw(&self, rx: mpsc::Receiver<Vec<f32>>, sample_rate: u32, channels: u16) {
-        self.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
-        self.has_error.store(false, std::sync::atomic::Ordering::Relaxed);
-        let _ = self.cmd_tx.send(AudioCmd::PlayRaw(rx, sample_rate, channels));
-    }
-
     pub fn set_volume(&self, volume: f32) {
         let _ = self.cmd_tx.send(AudioCmd::SetVolume(volume));
     }
@@ -589,10 +487,6 @@ impl AudioPlayer {
         let _ = self.cmd_tx.send(AudioCmd::Resume);
     }
 
-    pub fn stop(&self) {
-        let _ = self.cmd_tx.send(AudioCmd::Stop);
-    }
-
     pub fn is_empty(&self) -> bool {
         self.is_empty.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -602,7 +496,7 @@ impl AudioPlayer {
     }
 
     pub fn get_amplitude(&self) -> f32 {
-        f32::from_bits(self.amplitude.load(std::sync::atomic::Ordering::Relaxed))
+        self.dsp_state.read().unwrap().amplitude
     }
 
     pub fn is_initializing(&self) -> bool {
@@ -618,15 +512,11 @@ impl AudioPlayer {
 
 impl AudioBackend {
     fn stop_sink(&mut self) {
-        tracing::debug!("Stopping audio sinks");
+        tracing::debug!("Stopping audio sink");
         if let Some(sink) = &self.sink {
             sink.stop();
         }
-        if let Some(sink) = &self.radio_sink {
-            sink.stop();
-        }
         self.sink = None;
-        self.radio_sink = None;
     }
 
     fn stop_all(&mut self) {
@@ -702,8 +592,8 @@ impl AudioBackend {
             let source = rodio::Source::convert_samples::<f32>(source);
             let source = VisualizerTracker {
                 inner: source,
-                amplitude: self.amplitude_shared.clone(),
                 sample_tx: self.sample_tx.clone(),
+                sample_counter: 0,
             };
 
             tracing::debug!("Creating sink and appending source");

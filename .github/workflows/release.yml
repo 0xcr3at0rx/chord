@@ -8,7 +8,7 @@ on:
 
 jobs:
   build:
-    name: Build release binaries
+    name: Build release binaries and packages
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -18,9 +18,11 @@ jobs:
           - target: x86_64-unknown-linux-gnu
             artifact_name: chord
             asset_name: chord-linux-x86_64
+            bundle: true
           - target: aarch64-unknown-linux-gnu
             artifact_name: chord
             asset_name: chord-linux-aarch64
+            bundle: false
 
     steps:
       - name: Checkout repository
@@ -51,23 +53,57 @@ jobs:
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           else
             sudo apt-get update
-            sudo apt-get install -y libasound2-dev pkg-config
+            sudo apt-get install -y libasound2-dev pkg-config fuse libfuse2
           fi
+
+      - name: Install Packaging Tools
+        if: matrix.bundle == true
+        run: |
+          cargo install cargo-deb
+          cargo install cargo-generate-rpm
+          # Install linuxdeploy for AppImage
+          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy-x86_64.AppImage
 
       - name: Build
         run: |
           cargo build --release --target ${{ matrix.target }}
         shell: bash
 
-      - name: Prepare asset
+      - name: Create .deb package
+        if: matrix.bundle == true
+        run: |
+          cargo deb --target ${{ matrix.target }} --no-build
+
+      - name: Create .rpm package
+        if: matrix.bundle == true
+        run: |
+          cargo generate-rpm --target ${{ matrix.target }}
+
+      - name: Create AppImage
+        if: matrix.bundle == true
+        run: |
+          mkdir -p AppDir/usr/bin
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} AppDir/usr/bin/
+          # Create simple .desktop file and icon
+          echo -e "[Desktop Entry]\nName=Chord\nExec=chord\nIcon=chord\nType=Application\nCategories=Audio;Music;" > AppDir/chord.desktop
+          touch AppDir/chord.png # Placeholder icon
+          ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
+          mv Chord-x86_64.AppImage chord-x86_64.AppImage
+
+      - name: Prepare assets
         run: |
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} ${{ matrix.asset_name }}
         shell: bash
 
-      - name: Upload binaries to release
+      - name: Upload binaries and packages to release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
         with:
-          files: ${{ matrix.asset_name }}
+          files: |
+            ${{ matrix.asset_name }}
+            target/${{ matrix.target }}/debian/*.deb
+            target/${{ matrix.target }}/generate-rpm/*.rpm
+            chord-x86_64.AppImage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

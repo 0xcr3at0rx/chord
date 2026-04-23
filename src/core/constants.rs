@@ -2,8 +2,7 @@ use crossterm::event::KeyCode;
 use ratatui::style::Color;
 
 // --- APPLICATION CONSTANTS ---
-pub const KEY_DEVICES_MODE: KeyCode = KeyCode::Char('d');
-pub const DEFAULT_TICK_RATE_MS: u64 = 16;
+pub const DEFAULT_TICK_RATE_MS: u64 = 32;
 
 pub const KEY_DEBOUNCE_MS: u128 = 100;
 

@@ -39,5 +39,5 @@ tags = "Electronic, Techno"
 | `j` / `k` | Navigate station list |
 | `Enter` | Start streaming selected station |
 | `/` | Toggle Search / Filter stations |
-| `p` / `Space` | Pause / Resume current stream |
-| `+` / `-` | Control volume |
+| `Space` | Pause / Resume current stream |
+| `o` / `p` | Volume Down / Volume Up |

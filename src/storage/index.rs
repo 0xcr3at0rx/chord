@@ -94,9 +94,13 @@ impl LibraryIndex {
                                 continue;
                             }
 
-                            tracing::trace!(path = %path_str, "Indexing new file");
+                            tracing::trace!(path = %path_str, "Indexing file");
+                            
+                            // Preserve existing track_id if available in old cache
+                            let existing_id = cache.tracks.get(&path_str).map(|t| t.track_id.clone());
+                            
                             let mut metadata = TrackMetadata {
-                                track_id: uuid::Uuid::new_v4().to_string(),
+                                track_id: existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
                                 file_path: Some(path_str.clone()),
                                 ..Default::default()
                             };
@@ -296,83 +300,5 @@ impl LibraryIndex {
             .take_while(|(path, _)| path.starts_with(&playlist_path))
             .map(|(_, t)| t.clone())
             .collect()
-    }
-
-    pub async fn handle_browse_request(&self, req: crate::core::remote::pb::BrowseRequest) -> crate::core::remote::pb::BrowseResponse {
-        use crate::core::remote::pb::{self, BrowseResponse, TrackInfo, PlaylistInfo, AudioFormat};
-        
-        let mut response = BrowseResponse::default();
-        let tracks = self.tracks.read().await;
-
-        match pb::browse_request::Type::try_from(req.r#type).unwrap_or(pb::browse_request::Type::Root) {
-            pb::browse_request::Type::Root => {
-                response.total_items = 0;
-            }
-            pb::browse_request::Type::Playlists => {
-                let playlists = self.playlists.read().await;
-                response.playlists = playlists.iter().map(|(_, name)| {
-                    PlaylistInfo {
-                        id: name.clone(),
-                        name: name.clone(),
-                        track_count: 0,
-                    }
-                }).collect();
-                response.total_items = response.playlists.len() as u32;
-            }
-            pb::browse_request::Type::Tracks => {
-                let limit = if req.limit > 0 { req.limit as usize } else { 100 };
-                let offset = req.offset as usize;
-                
-                response.tracks = tracks.values()
-                    .skip(offset)
-                    .take(limit)
-                    .map(|t| TrackInfo {
-                        id: t.track_id.clone(),
-                        title: t.title.clone(),
-                        artist: t.artist.clone(),
-                        album: t.album.clone().unwrap_or_default(),
-                        duration_ms: t.duration_ms.unwrap_or(0) as u32,
-                        genre: t.genre.clone().unwrap_or_default(),
-                        track_number: 0,
-                        format: AudioFormat::Pcm as i32,
-                        sample_rate: 0,
-                        bit_depth: 0,
-                    })
-                    .collect();
-                response.total_items = tracks.len() as u32;
-            }
-            pb::browse_request::Type::Search => {
-                let query = req.id.to_lowercase();
-                let results: Vec<_> = tracks.values()
-                    .filter(|t| t.search_key.contains(&query))
-                    .collect();
-                
-                let limit = if req.limit > 0 { req.limit as usize } else { 50 };
-                let offset = req.offset as usize;
-
-                response.tracks = results.iter()
-                    .skip(offset)
-                    .take(limit)
-                    .map(|t| TrackInfo {
-                        id: t.track_id.clone(),
-                        title: t.title.clone(),
-                        artist: t.artist.clone(),
-                        album: t.album.clone().unwrap_or_default(),
-                        duration_ms: t.duration_ms.unwrap_or(0) as u32,
-                        genre: t.genre.clone().unwrap_or_default(),
-                        track_number: 0,
-                        format: AudioFormat::Pcm as i32,
-                        sample_rate: 0,
-                        bit_depth: 0,
-                    })
-                    .collect();
-                response.total_items = results.len() as u32;
-            }
-            pb::browse_request::Type::Albums | pb::browse_request::Type::Artists => {
-                // TODO
-            }
-        }
-
-        response
     }
 }

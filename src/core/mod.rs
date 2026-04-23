@@ -5,7 +5,4 @@ pub mod error;
 pub mod logger;
 pub mod models;
 pub mod radio_stations;
-pub mod remote;
-pub mod social;
-pub mod streamer;
 pub mod visualizer;

@@ -1,4 +1,4 @@
-# Chord 🎶
+# Chord
 
 A modern, fast, and minimalist terminal music player.
 

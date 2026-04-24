@@ -22,7 +22,7 @@ jobs:
           - target: aarch64-unknown-linux-gnu
             artifact_name: chord
             asset_name: chord-linux-aarch64
-            bundle: false
+            bundle: true
 
     steps:
       - name: Checkout repository
@@ -59,15 +59,19 @@ jobs:
       - name: Install Packaging Tools
         if: matrix.bundle == true
         run: |
-          cargo install cargo-deb
-          cargo install cargo-generate-rpm
-          # Install linuxdeploy for AppImage
-          wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
-          chmod +x linuxdeploy-x86_64.AppImage
+          cargo install cargo-deb || true
+          cargo install cargo-generate-rpm || true
+          if [ "${{ matrix.target }}" == "x86_64-unknown-linux-gnu" ]; then
+            wget https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+            chmod +x linuxdeploy-x86_64.AppImage
+          fi
 
       - name: Build
         run: |
           cargo build --release --target ${{ matrix.target }}
+          # Copy to default release dir for packaging tools that might expect it there
+          mkdir -p target/release
+          cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/release/
         shell: bash
 
       - name: Create .deb package
@@ -81,13 +85,12 @@ jobs:
           cargo generate-rpm --target ${{ matrix.target }}
 
       - name: Create AppImage
-        if: matrix.bundle == true
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
           mkdir -p AppDir/usr/bin
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} AppDir/usr/bin/
-          # Create simple .desktop file and icon
           echo -e "[Desktop Entry]\nName=Chord\nExec=chord\nIcon=chord\nType=Application\nCategories=Audio;Music;" > AppDir/chord.desktop
-          touch AppDir/chord.png # Placeholder icon
+          touch AppDir/chord.png
           ./linuxdeploy-x86_64.AppImage --appdir AppDir --output appimage
           mv Chord-x86_64.AppImage chord-x86_64.AppImage
 

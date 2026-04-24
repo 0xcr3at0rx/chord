@@ -23,5 +23,5 @@ Mandatory for changes in the audio path, library indexing, or UI rendering.
 Output of `cargo xtest` and any manual verification performed.
 
 ## Documentation
-- [ ] README.md / PERFORMANCE.md updated if applicable.
+- [ ] README.md updated if applicable.
 - [ ] Internal logic is documented with technical clarity.

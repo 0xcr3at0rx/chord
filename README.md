@@ -31,7 +31,6 @@ A modern, fast, and beautiful terminal music player and radio streamer built wit
 Chord is built for extreme efficiency. If you're developing and want to analyze performance:
 1. **Target Native**: Build with `RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 2. **Memory**: Use `htop` or `valgrind` to monitor the `mimalloc` allocator performance.
-3. **Details**: See [PERFORMANCE.md](./PERFORMANCE.md) for the full optimization guide.
 
 ## Keybindings
 - `j/k` or `Arrows`: Navigate items.
@@ -43,4 +42,4 @@ Chord is built for extreme efficiency. If you're developing and want to analyze 
 - `Tab`: Cycle between library views.
 - `q`: Quit.
 
-*For more details, see [KEYBINDINGS.md](./KEYBINDINGS.md) and [REFER.md](./REFER.md).*
+*For more details, see [KEYBINDINGS.md](./KEYBINDINGS.md).*

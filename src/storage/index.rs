@@ -130,51 +130,7 @@ impl LibraryIndex {
                     tracing::debug!(path = ?cache_path, "Saving cache to disk");
                     let _ = std::fs::write(&cache_path, toml_str);
                 }
-            }
-
-            let mut needs_save = false;
-            let mut updated_metadata = 0;
-
-            for track in cache.tracks.values_mut() {
-                // If metadata is unknown, try to re-read it
-                if track.artist == "Unknown Artist" {
-                    if let Some(path_str) = &track.file_path {
-                        let path = Path::new(path_str);
-                        if path.exists() {
-                            tracing::trace!(path = %path_str, "Attempting to recover missing metadata");
-                            if let Ok(probed) = lofty::read_from_path(path) {
-                                use lofty::prelude::*;
-                                if let Some(tag) = probed.primary_tag() {
-                                    track.title = tag
-                                        .title()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| track.title.to_string())
-                                        .into();
-                                    track.artist = tag
-                                        .artist()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| "Unknown Artist".to_string())
-                                        .into();
-                                    track.album = tag.album().map(|s| s.to_string().into());
-                                    track.genre = tag.genre().map(|s| s.to_string().into());
-                                    needs_save = true;
-                                    updated_metadata += 1;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            if updated_metadata > 0 {
-                tracing::info!(count = updated_metadata, "Recovered metadata for tracks");
-            }
-
-            if needs_save {
-                if let Ok(toml_str) = toml::to_string(&cache) {
-                    tracing::debug!(path = ?cache_path, "Updating cache file with new metadata");
-                    let _ = std::fs::write(&cache_path, toml_str);
-                }
+                cache.last_scan = Some(Utc::now());
             }
 
             let mut music_folders = std::collections::HashSet::new();

@@ -1,19 +1,26 @@
 ---
-name: Feature Request
-about: Suggest a new feature for Chord
-title: "[FEAT] "
+name: "🚀 Feature Proposal"
+about: Propose a high-performance, zero-bloat addition
+title: "[FEAT]: <short description>"
 labels: enhancement
 assignees: ''
 ---
 
-## Feature Proposal
-A clear and concise description of the feature you'd like.
+**The Problem**
+<!-- Describe the limitation or need this feature addresses. -->
 
-## Rationale (The "No Bloat" Test)
-Why is this feature essential for a high-performance terminal music player? How does it fit the "zero bloat" philosophy?
+**The Solution**
+<!-- Describe the proposed change. Keep it technical and concise. -->
 
-## Performance Impact
-How will this feature affect CPU and RAM usage? Features that degrade performance will likely be rejected.
+**Performance Impact (Mandatory)**
+- **Estimated CPU Change:** <!-- e.g. negligible, +1%, improves by 0.5% -->
+- **Estimated RAM Change:** <!-- e.g. <1MB -->
+- **Dependency Bloat:** <!-- Does this add new crates? If so, why? -->
 
-## Alternatives Considered
-Have you considered any other way to achieve this without adding complexity to Chord?
+**Zero-Bloat Justification**
+<!-- Why does this belong in Chord's core instead of being an external tool or a minor fork? -->
+
+**Checklist**
+- [ ] This feature does not degrade current playback performance.
+- [ ] This follows the "Minimalism First" philosophy.
+- [ ] I am willing to implement this myself (or help test it).

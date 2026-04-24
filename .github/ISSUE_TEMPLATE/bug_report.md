@@ -1,24 +1,33 @@
 ---
-name: Bug Report
-about: Report a bug to help us improve Chord
-title: "[BUG] "
+name: "🐛 Bug Report"
+about: Report a reproducible technical issue
+title: "[BUG]: <short description>"
 labels: bug
 assignees: ''
 ---
 
-## Description
-A clear and concise description of what the bug is.
+**Environment**
+- **OS:** <!-- e.g. Arch Linux, macOS, Windows 11 -->
+- **Chord Version:** <!-- e.g. 1.3.0 or commit hash -->
+- **Audio Backend:** <!-- e.g. Pipewire, ALSA, CoreAudio -->
 
-## Steps to Reproduce
-Steps to reproduce the behavior:
-1. ...
-2. ...
+**Reproduction Steps**
+1. 
+2. 
+3. 
 
-## Expected Behavior
-A clear and concise description of what you expected to happen.
+**Observed Behavior**
+<!-- What actually happened? Include error logs if available. -->
 
-## Performance Impact
-Does this bug cause any performance degradation (CPU/RAM)?
+**Expected Behavior**
+<!-- What should have happened? -->
 
-## No Bloat Check
-Is this a fix for a core feature? We avoid adding complexity for non-essential features.
+**Performance Impact**
+- [ ] Unexpected CPU spike
+- [ ] Memory leak/bloat
+- [ ] No performance impact
+
+**Integrity Check**
+- [ ] I have tested this against the latest `main` branch.
+- [ ] I have searched existing issues for duplicates.
+- [ ] This is a bug in a core feature, not a request for a new one.

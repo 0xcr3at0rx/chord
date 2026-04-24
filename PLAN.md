@@ -16,19 +16,16 @@ Chord is a high-performance, high-fidelity terminal music player. It focuses on 
 ### Phase 2: High-Fidelity Audio (IN PROGRESS)
 - [ ] **Bit-Perfect Engine**: Implement a raw PCM pipeline that bypasses OS mixers where possible.
 - [x] **Visualizer Performance**: SIMD-optimized FFT (via `rustfft`) and parallelized TUI rendering with bitwise XOR math optimizations.
-- [ ] **Lyrics Support**: Improved LRC parsing and synchronized display.
+- [x] **Lyrics Support**: Improved LRC parsing and synchronized display.
 
 ### Phase 3: Intelligence & Optimization
 - [x] **High Efficiency**: Massive CPU and RAM optimizations using SIMD, SmolStr, and lock-free data structures.
-- [ ] **Smart Caching**: Predictive pre-fetching of next tracks in the queue.
 - [ ] **Plugin System**: VST/AU support for local DSP processing.
 
 ---
 
 ## Verification & Quality Assurance
 - [x] **Performance Benchmarks**: Verified low CPU/Memory footprint even with large libraries (10k+ tracks).
+- [x] **Pull Request Workflow**: Exhaustive CI validation on every PR instead of direct branch pushes.
 - [ ] **Audio Quality Tests**: Verify bit-perfect output using loopback recording.
 
-## Technical Debt & Maintenance
-- [ ] **Refactoring**: Clean up UI components for better modularity.
-- [ ] **Documentation**: Comprehensive guide for keybindings and configuration.

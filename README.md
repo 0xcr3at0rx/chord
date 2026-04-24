@@ -3,13 +3,9 @@
 A modern, fast, and beautiful terminal music player and radio streamer built with Rust.
 
 <p align="center">
-  <img src="images/screenshot1.png" alt="Chord Main" width="800">
-</p>
-<p align="center">
-  <img src="images/screenshot2.png" alt="Chord Playlist" width="800">
-</p>
-<p align="center">
-  <img src="images/screenshot3.png" alt="Chord Visualizer" width="800">
+  <img src="images/screenshot1.png" alt="Chord Main" width="32%">
+  <img src="images/screenshot2.png" alt="Chord Playlist" width="32%">
+  <img src="images/screenshot3.png" alt="Chord Visualizer" width="32%">
 </p>
 
 ## Features

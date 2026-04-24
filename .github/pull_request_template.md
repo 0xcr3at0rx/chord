@@ -1,26 +1,27 @@
-## Summary
-<!-- Concise overview of the changes and the problem solved. -->
+## Overview
+Concise description of the PR's objective.
 
-## Technical Changes
-<!-- List significant changes under the hood. Mention SIMD, Lock-free queues, or memory optimizations if applicable. -->
+## Technical Implementation
+Detailed list of changes. Highlight optimizations like SIMD, lock-free primitives, or reduced heap allocations.
 
 ## Performance Benchmarks
-<!-- Mandatory for any change affecting the audio path or library indexing. -->
-- **Before:** <!-- e.g. 15MB RAM, 2% CPU -->
-- **After:**  <!-- e.g. 14MB RAM, 1.8% CPU -->
+Mandatory for changes in the audio path, library indexing, or UI rendering.
+- **Base (Main):**
+- **Branch (This PR):**
+- **Delta:**
 
-## Engineering Standards Checklist
-| Goal | Verified |
+## Engineering Standards
+| Standard | Verified |
 | :--- | :---: |
-| **No Bloat**: No unnecessary dependencies or logic branches | [ ] |
-| **Performance**: Zero regression in playback or indexing speed | [ ] |
-| **Memory**: Minimal allocations (prefer stack/pre-allocated) | [ ] |
-| **Testing**: Exhaustive tests added (Happy, Edge, Error cases) | [ ] |
-| **Style**: `cargo fmt` and `cargo clippy` pass without warnings | [ ] |
+| **Zero Bloat**: No redundant logic, unused dependencies, or scope creep | [ ] |
+| **Efficiency**: Performance is maintained or improved | [ ] |
+| **Memory**: Allocations are minimized and verified | [ ] |
+| **Validation**: Exhaustive test cases added for all branches | [ ] |
+| **Clean Build**: `cargo clippy` and `cargo fmt` pass with zero warnings | [ ] |
 
-## Testing
-<!-- Specifics on how you verified the changes. List the `cargo xtest` results. -->
+## Test Results
+Output of `cargo xtest` and any manual verification performed.
 
 ## Documentation
-- [ ] Updated `README.md` / `PERFORMANCE.md` if necessary.
-- [ ] Updated inline docs for new public methods/structs.
+- [ ] README.md / PERFORMANCE.md updated if applicable.
+- [ ] Internal logic is documented with technical clarity.

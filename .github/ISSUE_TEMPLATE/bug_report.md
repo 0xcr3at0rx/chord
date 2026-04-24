@@ -1,33 +1,33 @@
 ---
-name: "🐛 Bug Report"
-about: Report a reproducible technical issue
+name: Bug Report
+about: Report a technical defect in the codebase
 title: "[BUG]: <short description>"
 labels: bug
 assignees: ''
 ---
 
-**Environment**
-- **OS:** <!-- e.g. Arch Linux, macOS, Windows 11 -->
-- **Chord Version:** <!-- e.g. 1.3.0 or commit hash -->
-- **Audio Backend:** <!-- e.g. Pipewire, ALSA, CoreAudio -->
+## Technical Environment
+- **Operating System:**
+- **Chord Version:**
+- **Audio Architecture:** (e.g., ALSA, Pipewire, PulseAudio)
+- **Rust Toolchain:** (if relevant)
 
-**Reproduction Steps**
+## Reproduction Path
 1. 
 2. 
 3. 
 
-**Observed Behavior**
-<!-- What actually happened? Include error logs if available. -->
+## Observed Behavior
+Provide a precise description of the failure state. Include relevant `chord.log` or terminal stack traces.
 
-**Expected Behavior**
-<!-- What should have happened? -->
+## Expected Behavior
+Describe the correct state or behavior.
 
-**Performance Impact**
-- [ ] Unexpected CPU spike
-- [ ] Memory leak/bloat
-- [ ] No performance impact
+## Performance Analysis
+- [ ] Is this bug causing a regression in CPU/RAM efficiency?
+- [ ] Have you verified this is not a configuration error?
 
-**Integrity Check**
-- [ ] I have tested this against the latest `main` branch.
-- [ ] I have searched existing issues for duplicates.
-- [ ] This is a bug in a core feature, not a request for a new one.
+## Integrity Check
+- [ ] Tested against the latest `main` commit.
+- [ ] Verified no existing issue covers this defect.
+- [ ] Confirmed this is a functional defect, not a feature request.

@@ -94,6 +94,8 @@ pub struct App {
     pub input_mode: InputMode,
     pub previous_mode: InputMode,
     pub search_query: String,
+    pub last_search_query: String,
+    pub search_cache: Arc<[Arc<TrackMetadata>]>,
     pub radio_stations: Box<[Arc<crate::core::models::RadioStation>]>,
     pub filtered_stations: Box<[Arc<crate::core::models::RadioStation>]>,
     pub radio_list_state: ListState,
@@ -252,7 +254,7 @@ impl App {
         let tracks_arc: Arc<[Arc<TrackMetadata>]> = Arc::from(tracks);
         let app = App {
             all_tracks: Arc::clone(&tracks_arc),
-            filtered_tracks: tracks_arc,
+            filtered_tracks: Arc::clone(&tracks_arc),
             playlists,
             current_playlist: None,
             current_playlist_tracks: None,
@@ -261,6 +263,8 @@ impl App {
             input_mode: InputMode::PlaylistSelect,
             previous_mode: InputMode::Offline,
             search_query: String::new(),
+            last_search_query: String::new(),
+            search_cache: Arc::clone(&tracks_arc),
             radio_stations: Vec::new().into_boxed_slice(),
             filtered_stations: Vec::new().into_boxed_slice(),
             radio_list_state: ListState::default(),
@@ -1108,7 +1112,7 @@ impl App {
 
     pub fn filter_tracks(&mut self) {
         let query = self.search_query.to_lowercase();
-        
+
         // 1. Save currently selected track ID if any
         let selected_id = self.list_state.selected().and_then(|i| {
             self.filtered_tracks.get(i).map(|t| t.track_id.clone())
@@ -1121,8 +1125,16 @@ impl App {
 
         if query.is_empty() {
             self.filtered_tracks = Arc::clone(source);
+            self.search_cache = Arc::clone(source);
         } else {
-            let filtered: Box<[Arc<TrackMetadata>]> = source
+            // Smart Caching: If the new query starts with the old query, we can filter the already filtered subset!
+            let filter_source = if query.starts_with(&self.last_search_query) && !self.last_search_query.is_empty() {
+                &self.search_cache
+            } else {
+                source
+            };
+
+            let filtered: Box<[Arc<TrackMetadata>]> = filter_source
                 .iter()
                 .filter(|t| {
                     t.title.to_lowercase().contains(&query)
@@ -1132,11 +1144,15 @@ impl App {
                 .cloned()
                 .collect::<Vec<_>>()
                 .into_boxed_slice();
-            self.filtered_tracks = Arc::from(filtered);
+
+            let arc_filtered = Arc::from(filtered);
+            self.filtered_tracks = Arc::clone(&arc_filtered);
+            self.search_cache = arc_filtered;
         }
 
-        if self.filtered_tracks.is_empty() {
-            self.list_state.select(None);
+        self.last_search_query = query;
+
+        if self.filtered_tracks.is_empty() {            self.list_state.select(None);
         } else {
             // 2. Try to restore selection by ID
             let mut new_idx = None;
@@ -1242,6 +1258,8 @@ mod tests {
             input_mode: InputMode::Offline,
             previous_mode: InputMode::Offline,
             search_query: String::new(),
+            last_search_query: String::new(),
+            search_cache: Arc::from(vec![]),
             radio_stations: vec![].into_boxed_slice(),
             filtered_stations: vec![].into_boxed_slice(),
             radio_list_state: ListState::default(),

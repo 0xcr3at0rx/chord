@@ -10,6 +10,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
+use smol_str::SmolStr;
+
 #[derive(PartialEq, Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
 pub enum InputMode {
     Offline,
@@ -20,8 +22,8 @@ pub enum InputMode {
 
 #[derive(Clone, Debug)]
 pub struct Playlist {
-    pub id: String,
-    pub name: String,
+    pub id: SmolStr,
+    pub name: SmolStr,
 }
 
 #[derive(Clone, Debug)]
@@ -31,6 +33,9 @@ pub struct TrackMetadataUpdate {
     pub channels: u8,
     pub bitrate: u32,
     pub bit_depth: u8,
+    pub title: Option<String>,
+    pub artist: Option<String>,
+    pub album: Option<String>,
     pub genre: Option<String>,
     pub label: Option<String>,
     pub description: Option<String>,
@@ -40,8 +45,8 @@ pub struct TrackMetadataUpdate {
 
 #[derive(Clone, Debug)]
 pub struct RefreshUpdate {
-    pub all_tracks: Vec<Arc<TrackMetadata>>,
-    pub playlists: Vec<Playlist>,
+    pub all_tracks: Box<[Arc<TrackMetadata>]>,
+    pub playlists: Box<[Playlist]>,
 }
 
 pub struct VisualizationState {
@@ -78,22 +83,22 @@ impl Default for VisualizationState {
     }
 }
 
-pub struct App<'a> {
-    pub all_tracks: Arc<Vec<Arc<TrackMetadata>>>,
-    pub filtered_tracks: Arc<Vec<Arc<TrackMetadata>>>,
-    pub playlists: Vec<Playlist>,
+pub struct App {
+    pub all_tracks: Arc<[Arc<TrackMetadata>]>,
+    pub filtered_tracks: Arc<[Arc<TrackMetadata>]>,
+    pub playlists: Box<[Playlist]>,
     pub current_playlist: Option<Playlist>,
-    pub current_playlist_tracks: Option<Arc<Vec<Arc<TrackMetadata>>>>,
+    pub current_playlist_tracks: Option<Arc<[Arc<TrackMetadata>]>>,
     pub list_state: ListState,
     pub playlist_list_state: ListState,
     pub input_mode: InputMode,
     pub previous_mode: InputMode,
     pub search_query: String,
-    pub radio_stations: Vec<Arc<crate::core::models::RadioStation>>,
-    pub filtered_stations: Vec<Arc<crate::core::models::RadioStation>>,
+    pub radio_stations: Box<[Arc<crate::core::models::RadioStation>]>,
+    pub filtered_stations: Box<[Arc<crate::core::models::RadioStation>]>,
     pub radio_list_state: ListState,
     pub current_track: Option<Arc<TrackMetadata>>,
-    pub playback_track_list: Arc<Vec<Arc<TrackMetadata>>>,
+    pub playback_track_list: Arc<[Arc<TrackMetadata>]>,
     pub playing_idx: Option<usize>,
     pub is_playing: bool,
     pub is_starting: bool,
@@ -115,14 +120,14 @@ pub struct App<'a> {
     pub current_label: Option<String>,
     pub current_description: Option<String>,
     pub current_cover_art: Option<Vec<u8>>,
-    pub cached_image: Option<image::DynamicImage>,
-    pub image_cache: std::collections::HashMap<String, image::DynamicImage>,
+    pub cached_image: Option<Arc<image::DynamicImage>>,
+    pub image_cache: std::collections::HashMap<String, Arc<image::DynamicImage>>,
     pub image_state: Option<ratatui_image::protocol::StatefulProtocol>,
     pub image_picker: Option<ratatui_image::picker::Picker>,
     pub last_key_event: Option<(crossterm::event::KeyCode, std::time::Instant)>,
     pub last_error: Option<String>,
     pub audio: AudioPlayer,
-    pub settings: &'a Settings,
+    pub settings: Arc<Settings>,
     pub theme: crate::core::constants::Theme,
     pub index: Arc<LibraryIndex>,
     pub metadata_rx: mpsc::UnboundedReceiver<TrackMetadataUpdate>,
@@ -135,7 +140,7 @@ pub struct App<'a> {
     pub visual_state: VisualizationState,
 }
 
-impl<'a> App<'a> {
+impl App {
     #[tracing::instrument(skip(self))]
     pub fn generate_radio_art(&mut self, name: &str) {
         let accent_color = self.theme.accent;
@@ -144,9 +149,9 @@ impl<'a> App<'a> {
         if let Some(img) = self.image_cache.get(&cache_key) {
             tracing::debug!(name, "Using cached radio art");
             if let Some(picker) = &mut self.image_picker {
-                self.image_state = Some(picker.new_resize_protocol(img.clone()));
+                self.image_state = Some(picker.new_resize_protocol((**img).clone()));
             }
-            self.cached_image = Some(img.clone());
+            self.cached_image = Some(Arc::clone(img));
             return;
         }
 
@@ -180,30 +185,36 @@ impl<'a> App<'a> {
             }
         }
 
-        let dynamic_img = image::DynamicImage::ImageRgb8(img);
-        self.image_cache.insert(cache_key, dynamic_img.clone());
+        let dynamic_img = Arc::new(image::DynamicImage::ImageRgb8(img));
+        self.image_cache.insert(cache_key, Arc::clone(&dynamic_img));
         if let Some(picker) = &mut self.image_picker {
-            self.image_state = Some(picker.new_resize_protocol(dynamic_img.clone()));
+            self.image_state = Some(picker.new_resize_protocol((*dynamic_img).clone()));
         }
         self.cached_image = Some(dynamic_img);
     }
 
     #[tracing::instrument(skip(settings, index))]
     pub async fn new(
-        settings: &'a Settings,
+        settings: Arc<Settings>,
         index: Arc<LibraryIndex>,
-    ) -> ChordResult<App<'a>> {
+    ) -> ChordResult<App> {
         tracing::info!("Creating new App instance");
         let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
         let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
 
-        let music_dir = settings
+        let config = settings
             .config
             .read()
-            .map_err(|e| ChordError::Config(e.to_string()))?
-            .library
-            .music_dir
-            .clone();
+            .map_err(|e| ChordError::Config(e.to_string()))?;
+
+        let music_dir = config.library.music_dir.clone();
+        let volume = config.audio.volume;
+        let mode = config.audio.mode.clone();
+        let theme = config.theme.to_theme();
+        
+        // Drop lock before async calls
+        drop(config);
+
         let _ = index.load_cache(&music_dir, false).await;
 
         let mut tracks = index.get_all_tracks().await;
@@ -217,10 +228,11 @@ impl<'a> App<'a> {
         });
 
         let p_rows = index.get_playlists().await;
-        let playlists = p_rows
-            .into_iter()
-            .map(|(id, name)| Playlist { id, name })
-            .collect::<Vec<_>>();
+        let playlists: Box<[Playlist]> = p_rows
+            .iter()
+            .map(|(id, name)| Playlist { id: id.clone(), name: name.clone() })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
 
         let mut list_state = ListState::default();
         if !tracks.is_empty() {
@@ -233,26 +245,14 @@ impl<'a> App<'a> {
         }
 
         let audio = AudioPlayer::new();
-        {
-            let config = settings
-                .config
-                .read()
-                .map_err(|e| ChordError::Config(e.to_string()))?;
-            audio.set_volume(config.audio.volume);
-            audio.set_mode(&config.audio.mode);
-            audio.try_init();
-        }
+        audio.set_volume(volume);
+        audio.set_mode(&mode);
+        audio.try_init();
 
-        let theme = settings
-            .config
-            .read()
-            .map_err(|e| ChordError::Config(e.to_string()))?
-            .theme
-            .to_theme();
-
+        let tracks_arc: Arc<[Arc<TrackMetadata>]> = Arc::from(tracks);
         let app = App {
-            all_tracks: Arc::new(tracks.clone()),
-            filtered_tracks: Arc::new(tracks),
+            all_tracks: Arc::clone(&tracks_arc),
+            filtered_tracks: tracks_arc,
             playlists,
             current_playlist: None,
             current_playlist_tracks: None,
@@ -261,20 +261,15 @@ impl<'a> App<'a> {
             input_mode: InputMode::PlaylistSelect,
             previous_mode: InputMode::Offline,
             search_query: String::new(),
-            radio_stations: Vec::new(),
-            filtered_stations: Vec::new(),
+            radio_stations: Vec::new().into_boxed_slice(),
+            filtered_stations: Vec::new().into_boxed_slice(),
             radio_list_state: ListState::default(),
             current_track: None,
-            playback_track_list: Arc::new(Vec::new()),
+            playback_track_list: Arc::from(Vec::new()),
             playing_idx: None,
             is_playing: false,
             is_starting: false,
-            volume: settings
-                .config
-                .read()
-                .map_err(|e| ChordError::Config(e.to_string()))?
-                .audio
-                .volume,
+            volume,
             progress: 0.0,
             current_track_duration: Duration::from_secs(0),
             current_pos: Duration::from_secs(0),
@@ -299,7 +294,7 @@ impl<'a> App<'a> {
             last_key_event: None,
             last_error: None,
             audio,
-            settings,
+            settings: Arc::clone(&settings),
             theme,
             index,
             metadata_rx,
@@ -336,7 +331,7 @@ impl<'a> App<'a> {
                         .cmp(b.album.as_deref().unwrap_or("")),
                 )
             });
-            let arc_tracks = Arc::new(tracks);
+            let arc_tracks: Arc<[Arc<TrackMetadata>]> = Arc::from(tracks);
             self.current_playlist_tracks = Some(Arc::clone(&arc_tracks));
             self.filtered_tracks = arc_tracks;
         } else {
@@ -385,9 +380,10 @@ impl<'a> App<'a> {
             
             let p_rows = index_clone.get_playlists().await;
             let playlists = p_rows
-                .into_iter()
-                .map(|(id, name)| Playlist { id, name })
-                .collect();
+                .iter()
+                .map(|(id, name)| Playlist { id: id.clone(), name: name.clone() })
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
                 
             let _ = tx.send(RefreshUpdate {
                 all_tracks: tracks,
@@ -430,10 +426,10 @@ impl<'a> App<'a> {
                         if line == "[[stations]]" {
                             if !current_name.is_empty() && !current_url.is_empty() {
                                 stations.push(Arc::new(crate::core::models::RadioStation {
-                                    name: current_name.clone(),
-                                    url: current_url.clone(),
-                                    country: current_country.clone(),
-                                    tags: Some(current_tags.clone()),
+                                    name: std::mem::take(&mut current_name).into(),
+                                    url: std::mem::take(&mut current_url),
+                                    country: std::mem::take(&mut current_country).into(),
+                                    tags: Some(std::mem::take(&mut current_tags).into()),
                                 }));
                             }
                             current_name.clear();
@@ -452,10 +448,10 @@ impl<'a> App<'a> {
                     }
                     if !current_name.is_empty() && !current_url.is_empty() {
                         stations.push(Arc::new(crate::core::models::RadioStation {
-                            name: current_name,
+                            name: current_name.into(),
                             url: current_url,
-                            country: current_country,
-                            tags: Some(current_tags),
+                            country: current_country.into(),
+                            tags: Some(current_tags.into()),
                         }));
                     }
 
@@ -476,9 +472,9 @@ impl<'a> App<'a> {
                 }));
             }
         }
-
-        self.radio_stations = stations.clone();
+        self.radio_stations = stations.into_boxed_slice();
         self.filter_radio();
+
         self.radio_loaded = true;
     }
 
@@ -490,7 +486,7 @@ impl<'a> App<'a> {
             self.filtered_stations.get(i).map(|s| s.name.clone())
         });
 
-        let mut filtered = self.radio_stations.clone();
+        let mut filtered = self.radio_stations.to_vec();
 
         if !query.is_empty() {
             filtered.retain(|s| {
@@ -504,7 +500,7 @@ impl<'a> App<'a> {
             });
         }
 
-        self.filtered_stations = filtered;
+        self.filtered_stations = filtered.into_boxed_slice();
         if self.filtered_stations.is_empty() {
             self.radio_list_state.select(None);
         } else {
@@ -550,12 +546,12 @@ impl<'a> App<'a> {
 
             self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
                 track_id: "radio".into(),
-                title: name,
-                artist: format!("RADIO: {}", country),
+                title: name.into(),
+                artist: format!("RADIO: {}", country).into(),
                 album: tags.clone(),
                 album_art_url: None,
                 duration_ms: None,
-                genres: tags,
+                genres: tags.map(|s| s.into()),
                 file_size: None,
                 file_mtime: None,
                 file_path: None,
@@ -564,8 +560,7 @@ impl<'a> App<'a> {
                 label: None,
                 bit_depth: None,
                 sampling_rate: None,
-                status: Some("radio".into()),
-                search_key: String::new(),
+                status: Some("verified".into()),
             }));
         }
     }
@@ -591,7 +586,7 @@ impl<'a> App<'a> {
     }
 
     pub fn save_config(&self) -> ChordResult<()> {
-        let config_to_save = {
+        {
             let mut guard = self
                 .settings
                 .config
@@ -600,16 +595,12 @@ impl<'a> App<'a> {
 
             guard.audio.volume = self.volume;
             guard.audio.mode = self.audio.mode.lock().unwrap().clone();
+        }
 
-            guard.clone()
-        };
-
-        let config_dir = self.settings.config_dir.clone();
+        let settings = Arc::clone(&self.settings);
         std::thread::spawn(move || {
-            let config_file = config_file_path(config_dir);
-            if let Ok(toml_str) = toml::to_string_pretty(&config_to_save) {
-                let _ = std::fs::write(config_file, toml_str);
-            }
+            let config_file = config_file_path(&settings.config_dir);
+            let _ = settings.save_config(&config_file);
         });
 
         Ok(())
@@ -617,7 +608,7 @@ impl<'a> App<'a> {
 
     #[tracing::instrument(skip(self))]
     pub async fn update(&mut self) {
-        if self.is_playing {
+        if self.is_playing && (self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online) {
             let amp = self.audio.get_amplitude();
 
             // Audio-Kinematics
@@ -682,10 +673,11 @@ impl<'a> App<'a> {
 
         while let Ok(update) = self.refresh_rx.try_recv() {
             tracing::info!("Applying background library refresh update");
-            self.all_tracks = Arc::new(update.all_tracks);
+            self.all_tracks = Arc::from(update.all_tracks);
             self.playlists = update.playlists;
             
-            if let Some(p) = self.current_playlist.clone() {
+            if let Some(p) = self.current_playlist.as_ref() {
+                let p = p.clone();
                 self.select_playlist(Some(p)).await;
             } else if !self.playlists.is_empty() {
                 let p = self.playlists[0].clone();
@@ -710,11 +702,30 @@ impl<'a> App<'a> {
                 self.channels = update.channels;
                 self.bitrate = update.bitrate;
                 self.bit_depth = update.bit_depth;
-                self.current_genre = update.genre;
-                self.current_label = update.label;
-                self.current_description = update.description;
+                self.current_genre = update.genre.clone();
+                self.current_label = update.label.clone();
+                self.current_description = update.description.clone();
                 self.current_cover_art = update.cover_art;
                 self.current_track_duration = update.duration;
+
+                // Update the Arc<TrackMetadata> in the list if it was unverified
+                if let Some(track) = self.playback_track_list.get(update.idx) {
+                    if track.status.as_deref() == Some("unverified") {
+                        let mut new_track = (**track).clone();
+                        if let Some(t) = update.title { new_track.title = t.into(); }
+                        if let Some(a) = update.artist { new_track.artist = a.into(); }
+                        if let Some(al) = update.album { new_track.album = Some(al.into()); }
+                        if let Some(g) = update.genre { new_track.genre = Some(g.into()); }
+                        new_track.status = Some("verified".into());
+                        
+                        let arc_track = Arc::new(new_track);
+                        self.current_track = Some(Arc::clone(&arc_track));
+                        
+                        // We would ideally update the whole library here, 
+                        // but for now we update the active playback list to reflect names immediately
+                        // The next full scan will pick up the updated cache if we were to save it.
+                    }
+                }
 
                 let mut keys_to_keep = std::collections::HashSet::new();
 
@@ -740,7 +751,7 @@ impl<'a> App<'a> {
                     }
 
                     if let Some(img) = self.image_cache.get(&cache_key) {
-                        self.cached_image = Some(img.clone());
+                        self.cached_image = Some(Arc::clone(img));
                         self.image_state = None;
                     } else if let Some(art) = &self.current_cover_art {
                         if let Ok(img) = image::load_from_memory(art) {
@@ -755,18 +766,27 @@ impl<'a> App<'a> {
                                 let nb = (b as f32 * (tb as f32 / 255.0)) as u8;
                                 *pixel = image::Rgb([nr, ng, nb]);
                             }
-                            let themed = image::DynamicImage::ImageRgb8(rgb_img);
-                            
-                            self.image_cache.insert(cache_key, themed.clone());
+
+                            let themed = Arc::new(image::DynamicImage::ImageRgb8(rgb_img));
+                            self.image_cache.insert(cache_key.clone(), Arc::clone(&themed));
                             self.cached_image = Some(themed);
                             self.image_state = None;
                         }
+                        // Clear raw bytes after decoding to save RAM
+                        self.current_cover_art = None;
                     }
+
                 }
 
-                // Retain only adjacent items and radio items (keep radio bounded or just keep current radio)
-                self.image_cache
-                    .retain(|k, _| k.starts_with("radio_") || keys_to_keep.contains(k));
+                // Retain only adjacent items and the CURRENT radio station art
+                let current_radio_key = self.current_track.as_ref()
+                    .and_then(|t| if t.status.as_deref() == Some("radio") {
+                        Some(format!("radio_{}_{:?}", t.title, self.theme.accent))
+                    } else { None });
+
+                self.image_cache.retain(|k, _| {
+                    keys_to_keep.contains(k) || (current_radio_key.as_ref() == Some(k))
+                });
 
                 self.needs_redraw = true;
             }
@@ -964,6 +984,7 @@ impl<'a> App<'a> {
         if let Some(path_str) = &track.file_path {
             let path = PathBuf::from(path_str);
             if path.exists() {
+                self.load_lyrics(&path);
                 self.audio.play(path.clone());
                 self.is_playing = true;
                 self.playing_idx = Some(idx);
@@ -974,7 +995,6 @@ impl<'a> App<'a> {
                 self.accumulated_pos = Duration::from_secs(0);
                 self.current_pos = Duration::from_secs(0);
                 self.playback_start = Some(Instant::now());
-                self.load_lyrics(&path);
                 self.last_error = None;
 
                 let tx = self.metadata_tx.clone();
@@ -989,8 +1009,14 @@ impl<'a> App<'a> {
                         let mut label = None;
                         let mut desc = None;
                         let mut art = None;
+                        let mut title = None;
+                        let mut artist = None;
+                        let mut album = None;
 
                         if let Some(tag) = probed.primary_tag() {
+                            title = tag.title().map(|s| s.to_string());
+                            artist = tag.artist().map(|s| s.to_string());
+                            album = tag.album().map(|s| s.to_string());
                             genre = tag.genre().map(|s| s.to_string());
                             label = tag
                                 .get_string(&lofty::tag::ItemKey::Label)
@@ -1013,6 +1039,9 @@ impl<'a> App<'a> {
                             channels: props.channels().unwrap_or(0),
                             bitrate: props.audio_bitrate().unwrap_or(0),
                             bit_depth: props.bit_depth().unwrap_or(0),
+                            title,
+                            artist,
+                            album,
                             genre,
                             label,
                             description: desc,
@@ -1083,12 +1112,17 @@ impl<'a> App<'a> {
         if query.is_empty() {
             self.filtered_tracks = Arc::clone(source);
         } else {
-            let filtered: Vec<_> = source
+            let filtered: Box<[Arc<TrackMetadata>]> = source
                 .iter()
-                .filter(|t| t.search_key.contains(&query))
+                .filter(|t| {
+                    t.title.to_lowercase().contains(&query)
+                        || t.artist.to_lowercase().contains(&query)
+                        || t.album.as_ref().map(|a| a.to_lowercase().contains(&query)).unwrap_or(false)
+                })
                 .cloned()
-                .collect();
-            self.filtered_tracks = Arc::new(filtered);
+                .collect::<Vec<_>>()
+                .into_boxed_slice();
+            self.filtered_tracks = Arc::from(filtered);
         }
 
         if self.filtered_tracks.is_empty() {
@@ -1157,6 +1191,6 @@ impl<'a> App<'a> {
     }
 }
 
-fn config_file_path(config_dir: PathBuf) -> PathBuf {
+fn config_file_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.toml")
 }

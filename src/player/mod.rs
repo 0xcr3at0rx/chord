@@ -43,8 +43,8 @@ pub async fn run_player(
             ChordError::Internal(e.to_string())
         })?;
 
-    // Pass references to App
-    let mut app = App::new(&settings, index).await?;
+    // Pass cloned settings Arc to App
+    let mut app = App::new(Arc::clone(&settings), index).await?;
     app.needs_redraw = true;
 
     tracing::info!("Starting application loop");
@@ -70,15 +70,16 @@ pub async fn run_player(
 #[tracing::instrument(skip(terminal, app))]
 async fn run_app<B: Backend>(
     terminal: &mut Terminal<B>,
-    app: &mut App<'_>,
+    app: &mut App,
 ) -> ChordResult<()> {
     let tick_rate = Duration::from_millis(DEFAULT_TICK_RATE_MS);
     let mut last_tick = Instant::now();
 
     loop {
-        if last_tick.elapsed() >= tick_rate {
+        let now = Instant::now();
+        if now.duration_since(last_tick) >= tick_rate {
             app.update().await;
-            last_tick = Instant::now();
+            last_tick = now;
         }
 
         if app.needs_redraw {
@@ -88,9 +89,12 @@ async fn run_app<B: Backend>(
             app.needs_redraw = false;
         }
 
-        let timeout = tick_rate
-            .checked_sub(last_tick.elapsed())
-            .unwrap_or(Duration::from_millis(1));
+        let elapsed = last_tick.elapsed();
+        let timeout = if elapsed >= tick_rate {
+            Duration::from_millis(1)
+        } else {
+            tick_rate - elapsed
+        };
 
         if event::poll(timeout).map_err(|e| ChordError::Internal(e.to_string()))? {
             if let Event::Key(key) = event::read().map_err(|e| ChordError::Internal(e.to_string()))? {

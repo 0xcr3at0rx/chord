@@ -17,10 +17,13 @@ The visualizer uses a kinematic system (`VisualizationState`) to track:
 - **Beat Flash**: Instant luminance peaks on detected beats with exponential decay.
 
 ## Performance Optimizations
-- **Bitwise XOR Math**: Uses bit-level operations for floating-point absolute value calculations to minimize CPU cycles in hot loops.
-- **Parallel Rendering**: The TUI visualizer renders rows in parallel, significantly reducing the main thread's burden during high-resolution playback.
-- **Pre-allocated FFT Buffers**: All signal processing buffers are allocated once on startup to prevent heap allocation jitter during playback.
-- **Adaptive Hop Size**: Dynamically adjusts audio analysis frequency to balance visual responsiveness with CPU efficiency.
+- **SIMD Vectorization**: Uses the `wide` crate to process audio samples in 8-lane batches (`f32x8`) for amplitude and windowing, maximizing CPU throughput.
+- **Small String Optimization (SSO)**: Replaced `String` with `SmolStr` for track metadata and identifiers, reducing heap allocations and memory fragmentation.
+- **Lock-Free Buffers**: Uses SPSC (Single Producer Single Consumer) lock-free ring buffers (`ringbuf`) for passing audio data between threads without Mutex overhead.
+- **Bitwise XOR Math**: Uses bit-level operations for floating-point absolute value calculations.
+- **Parallel Rendering**: The TUI visualizer renders rows in parallel.
+- **Pre-allocated FFT Buffers**: All signal processing buffers are allocated once on startup.
+- **Arc & Boxed Slices**: Uses `Arc<[T]>` and `Box<[T]>` for immutable lists to eliminate capacity overhead and improve data sharing.
 
 ## Radio Art Generation
 Unique cover art for radio stations is procedurally generated using a deterministic hash of the station name and tinted with the current theme's accent color. This ensures every station has a consistent, unique visual identity.

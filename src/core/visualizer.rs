@@ -16,28 +16,22 @@ pub struct Visualizer<'a> {
     pub config: VisualizerConfig<'a>,
 }
 
-/// Fast bitwise absolute value for f64
-#[inline(always)]
-fn xor_abs_f64(f: f64) -> f64 {
-    f64::from_bits(f.to_bits() & 0x7FFFFFFFFFFFFFFF)
-}
-
 impl<'a> Visualizer<'a> {
     pub fn new(config: VisualizerConfig<'a>) -> Self {
         Self { config }
     }
 
     pub fn render(&self) -> Vec<Line<'static>> {
-        let width = self.config.width;
-        let height = self.config.height;
+        let width = self.config.width as usize;
+        let height = self.config.height as usize;
 
         if !self.config.is_playing {
             return (0..height)
-                .map(|_| Line::from(" ".repeat(width as usize)))
+                .map(|_| Line::from(" ".repeat(width)))
                 .collect();
         }
 
-        let amplitude = self.config.dsp.amplitude as f64;
+        let amplitude = self.config.dsp.amplitude;
         let vol = (amplitude * 18.0).clamp(0.1, 5.0);
         let beat_pulse = if self.config.dsp.is_beat { 1.3 } else { 1.0 };
 
@@ -53,10 +47,10 @@ impl<'a> Visualizer<'a> {
         let color_tail = interpolate_color(note_color, Color::Black, 0.6);
         let char_beat = if self.config.dsp.is_beat { "█" } else { "●" };
 
-        let waveform_len = self.config.dsp.waveform.len() as f64 - 1.0;
-        let mut wave_ys = Vec::with_capacity(width as usize);
+        let waveform_len = (self.config.dsp.waveform.len() - 1) as f32;
+        let mut wave_ys = Vec::with_capacity(width);
         for i in 0..width {
-            let norm_x = i as f64 / width as f64;
+            let norm_x = i as f32 / width as f32;
             let wave_idx = (norm_x * waveform_len) as usize;
             let sample = self
                 .config
@@ -64,19 +58,21 @@ impl<'a> Visualizer<'a> {
                 .waveform
                 .get(wave_idx)
                 .cloned()
-                .unwrap_or(0.0) as f64;
+                .unwrap_or(0.0);
             wave_ys.push(sample * 0.45 * vol * beat_pulse + 0.5);
         }
 
-        // Render rows serially to avoid thread overhead causing audio underruns
         (0..height)
             .map(|y_row| {
-                let mut spans = Vec::with_capacity(width as usize);
-                let norm_y = (height as f64 - 1.0 - y_row as f64) / height as f64;
-                let axis_dist = xor_abs_f64(norm_y - 0.5);
+                let mut spans = Vec::new();
+                let norm_y = (height as f32 - 1.0 - y_row as f32) / height as f32;
+                let axis_dist = (norm_y - 0.5).abs();
+
+                let mut current_text = String::with_capacity(width);
+                let mut current_color = Color::Reset;
 
                 for i in 0..width {
-                    let dist = xor_abs_f64(norm_y - wave_ys[i as usize]);
+                    let dist = (norm_y - wave_ys[i]).abs();
 
                     let (char_str, color) = if dist < 0.015 * vol {
                         (char_beat, color_beat)
@@ -90,7 +86,20 @@ impl<'a> Visualizer<'a> {
                         (" ", Color::Reset)
                     };
 
-                    spans.push(Span::styled(char_str, Style::default().fg(color)));
+                    if color == current_color {
+                        current_text.push_str(char_str);
+                    } else {
+                        if !current_text.is_empty() {
+                            spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
+                        }
+                        current_text.clear();
+                        current_text.push_str(char_str);
+                        current_color = color;
+                    }
+                }
+                
+                if !current_text.is_empty() {
+                    spans.push(Span::styled(current_text, Style::default().fg(current_color)));
                 }
 
                 Line::from(spans)

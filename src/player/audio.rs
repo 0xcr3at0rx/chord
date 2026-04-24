@@ -121,7 +121,8 @@ impl<R: Read> Seek for StreamingReader<R> {
 }
 
 use crate::core::dsp::{AudioAnalyzer, DspState};
-use std::sync::mpsc as channel;
+use crossbeam_queue::ArrayQueue;
+use std::sync::Arc;
 
 fn suppress_alsa_errors() {
     // Already handled by gag-based redirection in logger.rs
@@ -138,7 +139,7 @@ where
     S: rodio::Source<Item = f32>,
 {
     inner: S,
-    sample_tx: channel::SyncSender<f32>,
+    sample_queue: Arc<ArrayQueue<f32>>,
     sample_counter: u32,
 }
 
@@ -172,7 +173,7 @@ where
         // Send every 4th sample to analyzer to reduce overhead and prevent underruns
         self.sample_counter = (self.sample_counter + 1) % 4;
         if self.sample_counter == 0 {
-            let _ = self.sample_tx.try_send(sample);
+            let _ = self.sample_queue.push(sample);
         }
 
         Some(sample)
@@ -209,14 +210,16 @@ struct AudioBackend {
     has_error_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
-    sample_tx: channel::SyncSender<f32>,
+    sample_queue: Arc<ArrayQueue<f32>>,
 }
 
 impl AudioPlayer {
     pub fn new() -> Self {
         suppress_alsa_errors();
         let (tx, rx) = mpsc::channel();
-        let (sample_tx, sample_rx) = channel::sync_channel(10000);
+        
+        // Use lock-free crossbeam ArrayQueue
+        let sample_queue = Arc::new(ArrayQueue::new(16384));
 
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -232,19 +235,20 @@ impl AudioPlayer {
         let backend_init = is_initializing.clone();
         let backend_last_err = last_error.clone();
         let backend_tx = tx.clone();
+        let analyzer_queue = Arc::clone(&sample_queue);
 
         // Start Analyzer thread
         std::thread::spawn(move || {
             let mut samples_buf = Vec::with_capacity(2048);
             loop {
-                while let Ok(sample) = sample_rx.recv_timeout(Duration::from_millis(10)) {
+                while let Some(sample) = analyzer_queue.pop() {
                     samples_buf.push(sample);
                     if samples_buf.len() >= 2048 {
                         // Sliding window: process current buffer
                         analyzer.process_samples(&samples_buf);
 
-                        // Shift buffer by HOP_SIZE (256)
-                        let hop = 256;
+                        // Increased hop size (1024) to reduce context-switching overhead
+                        let hop = 1024;
                         if samples_buf.len() > hop {
                             samples_buf.drain(0..hop);
                         } else {
@@ -252,10 +256,11 @@ impl AudioPlayer {
                         }
                     }
                 }
+                std::thread::sleep(Duration::from_millis(10));
             }
         });
 
-        let backend_sample_tx_clone = sample_tx.clone();
+        let backend_queue = Arc::clone(&sample_queue);
         std::thread::spawn(move || {
             let mut backend = AudioBackend {
                 stream: None,
@@ -267,7 +272,7 @@ impl AudioPlayer {
                 has_error_shared: backend_error,
                 is_initializing_shared: backend_init,
                 last_error_shared: backend_last_err,
-                sample_tx: backend_sample_tx_clone,
+                sample_queue: backend_queue,
             };
 
             let _ = backend.try_init(false);
@@ -322,8 +327,7 @@ impl AudioPlayer {
                         let volume = backend.volume;
                         let last_error_shared = backend.last_error_shared.clone();
                         let has_error_shared = backend.has_error_shared.clone();
-
-                        let sample_tx_clone = backend.sample_tx.clone();
+                        let queue_clone = Arc::clone(&backend.sample_queue);
 
                         std::thread::spawn(move || {
                             if let Some(handle) = handle_shared {
@@ -357,7 +361,7 @@ impl AudioPlayer {
                                         let source = rodio::Source::convert_samples::<f32>(source);
                                         let source = VisualizerTracker {
                                             inner: source,
-                                            sample_tx: sample_tx_clone.clone(),
+                                            sample_queue: queue_clone.clone(),
                                             sample_counter: 0,
                                         };
                                         let sink = Sink::try_new(&handle)
@@ -592,7 +596,7 @@ impl AudioBackend {
             let source = rodio::Source::convert_samples::<f32>(source);
             let source = VisualizerTracker {
                 inner: source,
-                sample_tx: self.sample_tx.clone(),
+                sample_queue: self.sample_queue.clone(),
                 sample_counter: 0,
             };
 

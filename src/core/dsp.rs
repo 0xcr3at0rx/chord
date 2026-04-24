@@ -1,6 +1,7 @@
 use realfft::{RealFftPlanner, RealToComplex};
 use std::sync::Arc;
 use std::sync::RwLock;
+use wide::f32x8;
 
 pub const FFT_SIZE: usize = 2048;
 
@@ -80,16 +81,36 @@ impl AudioAnalyzer {
             let to_copy = std::cmp::min(samples.len(), FFT_SIZE);
             state.waveform[..to_copy].copy_from_slice(&samples[..to_copy]);
             
-            // Fast amplitude calculation
-            let sum: f32 = samples.iter().map(|&s| xor_abs(s)).sum();
+            // SIMD-accelerated amplitude calculation
+            let mut sum_simd = f32x8::ZERO;
+            let chunks = samples.chunks_exact(8);
+            let remainder = chunks.remainder();
+            
+            for chunk in chunks {
+                let v = f32x8::from(chunk);
+                sum_simd += v.abs();
+            }
+            
+            let mut sum = sum_simd.reduce_add();
+            for &s in remainder {
+                sum += xor_abs(s);
+            }
+            
             current_amplitude = sum / samples.len() as f32;
+            // Exponential moving average for smoothness
             state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2);
         }
 
         if samples.len() >= FFT_SIZE {
-            // Use pre-allocated input buffer
-            for i in 0..FFT_SIZE {
-                self.fft_input[i] = samples[i] * self.window[i];
+            // SIMD-accelerated windowing
+            let s_chunks = samples[..FFT_SIZE].chunks_exact(8);
+            let w_chunks = self.window.chunks_exact(8);
+            
+            for (i, (s_c, w_c)) in s_chunks.zip(w_chunks).enumerate() {
+                let s = f32x8::from(s_c);
+                let w = f32x8::from(w_c);
+                let res = s * w;
+                self.fft_input[i * 8..(i + 1) * 8].copy_from_slice(&res.to_array());
             }
 
             // Process FFT using pre-allocated output buffer
@@ -115,6 +136,8 @@ impl AudioAnalyzer {
         self.energy_history.push(amplitude);
         self.energy_avg =
             self.energy_history.iter().sum::<f32>() / self.energy_history.len() as f32;
-        amplitude > self.energy_avg * 1.6 && amplitude > 0.05
+        
+        // Branchless-style comparison (result is bool)
+        (amplitude > self.energy_avg * 1.6) & (amplitude > 0.05)
     }
 }

@@ -22,6 +22,12 @@ A modern, fast, and beautiful terminal music player and radio streamer built wit
 3. **Switch to Radio**: Press `CTRL+R`.
 4. **Search**: Press `/`.
 
+## Performance & Profiling
+Chord is built for extreme efficiency. If you're developing and want to analyze performance:
+1. **Target Native**: Build with `RUSTFLAGS="-C target-cpu=native" cargo build --release`.
+2. **Flamegraphs**: Install `cargo-flamegraph` and run `cargo flamegraph` to identify CPU hotspots.
+3. **Memory**: Use `htop` or `valgrind` to monitor the `mimalloc` allocator performance.
+
 ## Keybindings
 - `j/k` or `Arrows`: Navigate items.
 - `l/h`: Skip to Next/Previous track.

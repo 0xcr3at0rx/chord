@@ -46,7 +46,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             for p in &app.playlists {
                 items.push(ListItem::new(Line::from(vec![
                     Span::styled("  ", Style::default()),
-                    Span::styled(&p.name, Style::default()),
+                    Span::styled(p.name.as_str(), Style::default()),
                 ])));
             }
 
@@ -220,11 +220,11 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                     ListItem::new(vec![
                         Line::from(vec![
                             Span::styled(indicator, style),
-                            Span::styled(&t.title, style),
+                            Span::styled(t.title.as_str(), style),
                         ]),
                         Line::from(vec![
                             Span::raw("    "),
-                            Span::styled(&t.artist, Style::default().fg(app.theme.dim)),
+                            Span::styled(t.artist.as_str(), Style::default().fg(app.theme.dim)),
                         ]),
                     ])
                 })
@@ -287,7 +287,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
                         .image_picker
                         .unwrap_or_else(|| ratatui_image::picker::Picker::from_fontsize((7, 14)));
 
-                    app.image_state = Some(picker.new_resize_protocol(img.clone()));
+                    app.image_state = Some(picker.new_resize_protocol((**img).clone()));
                 }
 
                 if let Some(state) = &mut app.image_state {
@@ -320,7 +320,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             // --- ROW 1: Title ---
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
-                    &track.title,
+                    track.title.as_str(),
                     Style::default()
                         .fg(app.theme.accent)
                         .add_modifier(Modifier::BOLD),
@@ -332,7 +332,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
             // --- ROW 2: Artist ---
             f.render_widget(
                 Paragraph::new(Line::from(vec![Span::styled(
-                    &track.artist,
+                    track.artist.as_str(),
                     Style::default().fg(app.theme.fg),
                 )]))
                 .alignment(Alignment::Left),

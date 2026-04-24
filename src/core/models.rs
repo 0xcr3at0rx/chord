@@ -1,32 +1,31 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TrackMetadata {
-    pub track_id: String,
-    pub title: String,
-    pub artist: String,
-    pub album: Option<String>,
-    pub album_art_url: Option<String>,
+    pub track_id: SmolStr,
+    pub title: SmolStr,
+    pub artist: SmolStr,
+    pub album: Option<SmolStr>,
+    pub album_art_url: Option<SmolStr>,
     pub duration_ms: Option<i64>,
-    pub genres: Option<String>,
+    pub genres: Option<SmolStr>,
     pub file_size: Option<i64>,
     pub file_mtime: Option<f64>,
-    pub file_path: Option<String>,
+    pub file_path: Option<SmolStr>,
     pub last_verified_at: Option<DateTime<Utc>>,
-    pub genre: Option<String>,
-    pub label: Option<String>,
+    pub genre: Option<SmolStr>,
+    pub label: Option<SmolStr>,
     pub bit_depth: Option<u8>,
     pub sampling_rate: Option<u32>,
-    pub status: Option<String>,
-    #[serde(default)]
-    pub search_key: String,
+    pub status: Option<SmolStr>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RadioStation {
-    pub name: String,
+    pub name: SmolStr,
     pub url: String,
-    pub country: String,
-    pub tags: Option<String>,
+    pub country: SmolStr,
+    pub tags: Option<SmolStr>,
 }

@@ -3,9 +3,21 @@ mod player;
 mod storage;
 
 use std::sync::Arc;
+use single_instance::SingleInstance;
+use mimalloc::MiMalloc;
+
+#[global_allocator]
+static GLOBAL: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let instance = SingleInstance::new("chord-music-player")
+        .expect("Failed to create single instance lock");
+    if !instance.is_single() {
+        eprintln!("Chord is already running.");
+        std::process::exit(1);
+    }
+
     let _log_guards = core::logger::init_logger();
     tracing::info!("Starting Chord...");
 

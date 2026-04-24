@@ -2,6 +2,7 @@ use crate::core::models::TrackMetadata;
 use anyhow::Result;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -9,16 +10,16 @@ use tokio::sync::RwLock;
 
 #[derive(Serialize, Deserialize, Default)]
 struct LibraryCache {
-    /// Key: Full Path as String
-    tracks: BTreeMap<String, TrackMetadata>,
+    /// Key: Full Path as SmolStr
+    tracks: BTreeMap<SmolStr, TrackMetadata>,
     last_scan: Option<chrono::DateTime<Utc>>,
 }
 
 pub struct LibraryIndex {
     cache_path: PathBuf,
     /// Ordered by file path for stable and fast prefix matching (playlists)
-    tracks: Arc<RwLock<BTreeMap<String, Arc<TrackMetadata>>>>,
-    playlists: Arc<RwLock<Vec<(String, String)>>>,
+    tracks: Arc<RwLock<BTreeMap<SmolStr, Arc<TrackMetadata>>>>,
+    playlists: Arc<RwLock<Box<[(SmolStr, SmolStr)]>>>,
 }
 
 impl LibraryIndex {
@@ -28,7 +29,7 @@ impl LibraryIndex {
         Self {
             cache_path,
             tracks: Arc::new(RwLock::new(BTreeMap::new())),
-            playlists: Arc::new(RwLock::new(Vec::new())),
+            playlists: Arc::new(RwLock::new(Vec::new().into_boxed_slice())),
         }
     }
 
@@ -86,7 +87,7 @@ impl LibraryIndex {
                             .unwrap_or("")
                             .to_lowercase();
                         if matches!(ext.as_str(), "mp3" | "flac" | "ogg" | "wav" | "m4a") {
-                            let path_str = path.to_string_lossy().to_string();
+                            let path_str = SmolStr::from(path.to_string_lossy().to_string());
                             
                             // If not force_rescan and already in cache, skip
                             if !force_rescan && cache.tracks.contains_key(&path_str) {
@@ -100,51 +101,22 @@ impl LibraryIndex {
                             let existing_id = cache.tracks.get(&path_str).map(|t| t.track_id.clone());
                             
                             let mut metadata = TrackMetadata {
-                                track_id: existing_id.unwrap_or_else(|| uuid::Uuid::new_v4().to_string()),
+                                track_id: existing_id.unwrap_or_else(|| SmolStr::from(uuid::Uuid::new_v4().to_string())),
                                 file_path: Some(path_str.clone()),
                                 ..Default::default()
                             };
 
-                            // Try to extract metadata
-                            if let Ok(probed) = lofty::read_from_path(path) {
-                                use lofty::prelude::*;
-                                if let Some(tag) = probed.primary_tag() {
-                                    metadata.title = tag
-                                        .title()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| {
-                                            path.file_name()
-                                                .and_then(|f| f.to_str())
-                                                .unwrap_or("Unknown")
-                                                .to_string()
-                                        });
-                                    metadata.artist = tag
-                                        .artist()
-                                        .map(|s| s.to_string())
-                                        .unwrap_or_else(|| "Unknown Artist".to_string());
-                                    metadata.album = tag.album().map(|s| s.to_string());
-                                    metadata.genre = tag.genre().map(|s| s.to_string());
-                                }
-                            }
+                            // Lazy Metadata: Only extract basic info during scan
+                            // Full tag extraction happens on-demand when playing or viewing details
+                            metadata.title = path
+                                .file_name()
+                                .and_then(|f| f.to_str())
+                                .unwrap_or("Unknown")
+                                .to_string()
+                                .into();
+                            metadata.artist = "Unknown Artist".to_string().into();
+                            metadata.status = Some("unverified".into());
 
-                            if metadata.title.is_empty() {
-                                metadata.title = path
-                                    .file_name()
-                                    .and_then(|f| f.to_str())
-                                    .unwrap_or("Unknown")
-                                    .to_string();
-                            }
-                            if metadata.artist.is_empty() {
-                                metadata.artist = "Unknown Artist".to_string();
-                            }
-
-                            metadata.search_key = format!(
-                                "{} {} {}",
-                                metadata.title,
-                                metadata.artist,
-                                metadata.album.as_deref().unwrap_or("")
-                            )
-                            .to_lowercase();
                             cache.tracks.insert(path_str, metadata);
                             new_tracks_found += 1;
                         }
@@ -176,39 +148,21 @@ impl LibraryIndex {
                                     track.title = tag
                                         .title()
                                         .map(|s| s.to_string())
-                                        .unwrap_or_else(|| track.title.clone());
+                                        .unwrap_or_else(|| track.title.to_string())
+                                        .into();
                                     track.artist = tag
                                         .artist()
                                         .map(|s| s.to_string())
-                                        .unwrap_or_else(|| "Unknown Artist".to_string());
-                                    track.album = tag.album().map(|s| s.to_string());
-                                    track.genre = tag.genre().map(|s| s.to_string());
+                                        .unwrap_or_else(|| "Unknown Artist".to_string())
+                                        .into();
+                                    track.album = tag.album().map(|s| s.to_string().into());
+                                    track.genre = tag.genre().map(|s| s.to_string().into());
                                     needs_save = true;
                                     updated_metadata += 1;
-
-                                    // Force update search_key since metadata changed
-                                    track.search_key = format!(
-                                        "{} {} {}",
-                                        track.title,
-                                        track.artist,
-                                        track.album.as_deref().unwrap_or("")
-                                    )
-                                    .to_lowercase();
                                 }
                             }
                         }
                     }
-                }
-
-                if track.search_key.is_empty() {
-                    track.search_key = format!(
-                        "{} {} {}",
-                        track.title,
-                        track.artist,
-                        track.album.as_deref().unwrap_or("")
-                    )
-                    .to_lowercase();
-                    needs_save = true;
                 }
             }
 
@@ -225,7 +179,7 @@ impl LibraryIndex {
 
             let mut music_folders = std::collections::HashSet::new();
             for path_str in cache.tracks.keys() {
-                let path = Path::new(path_str);
+                let path = Path::new(path_str.as_str());
                 if let Some(parent) = path.parent() {
                     if let Ok(rel_path) = parent.strip_prefix(&canonical_music_dir) {
                         if rel_path.as_os_str() != "" {
@@ -237,21 +191,21 @@ impl LibraryIndex {
 
             tracing::debug!(folder_count = music_folders.len(), "Processing playlists/folders");
 
-            let mut found_playlists: Vec<(String, String)> = music_folders
+            let mut found_playlists: Vec<(SmolStr, SmolStr)> = music_folders
                 .into_iter()
                 .map(|p| {
-                    let path_str = p.to_string_lossy().to_string();
+                    let path_str = SmolStr::from(p.to_string_lossy().to_string());
                     (path_str.clone(), path_str)
                 })
                 .collect();
             found_playlists.sort_by(|a, b| a.0.cmp(&b.0));
 
-            let arc_tracks: BTreeMap<String, Arc<TrackMetadata>> = cache
+            let arc_tracks: BTreeMap<SmolStr, Arc<TrackMetadata>> = cache
                 .tracks
                 .into_iter()
                 .map(|(k, v)| (k, Arc::new(v)))
                 .collect();
-            (arc_tracks, found_playlists)
+            (arc_tracks, found_playlists.into_boxed_slice())
         })
         .await
         .map_err(|e| {
@@ -273,11 +227,11 @@ impl LibraryIndex {
         Ok(())
     }
 
-    pub async fn get_all_tracks(&self) -> Vec<Arc<TrackMetadata>> {
-        self.tracks.read().await.values().cloned().collect()
+    pub async fn get_all_tracks(&self) -> Box<[Arc<TrackMetadata>]> {
+        self.tracks.read().await.values().cloned().collect::<Vec<_>>().into_boxed_slice()
     }
 
-    pub async fn get_playlists(&self) -> Vec<(String, String)> {
+    pub async fn get_playlists(&self) -> Box<[(SmolStr, SmolStr)]> {
         self.playlists.read().await.clone()
     }
 
@@ -285,7 +239,7 @@ impl LibraryIndex {
         &self,
         playlist_name: &str,
         music_dir: &Path,
-    ) -> Vec<Arc<TrackMetadata>> {
+    ) -> Box<[Arc<TrackMetadata>]> {
         let tracks = self.tracks.read().await;
         let mut playlist_path = music_dir.join(playlist_name).to_string_lossy().to_string();
 
@@ -296,9 +250,10 @@ impl LibraryIndex {
 
         // Efficient prefix scan using BTreeMap range
         tracks
-            .range(playlist_path.clone()..)
+            .range(SmolStr::from(playlist_path.as_str())..)
             .take_while(|(path, _)| path.starts_with(&playlist_path))
             .map(|(_, t)| t.clone())
-            .collect()
+            .collect::<Vec<_>>()
+            .into_boxed_slice()
     }
 }

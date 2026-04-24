@@ -887,9 +887,14 @@ impl App {
     }
 
     pub fn next(&mut self) {
+        let len = self.filtered_tracks.len();
+        if len == 0 {
+            self.list_state.select(None);
+            return;
+        }
         let i = match self.list_state.selected() {
             Some(i) => {
-                if i >= self.filtered_tracks.len() - 1 {
+                if i >= len - 1 {
                     0
                 } else {
                     i + 1
@@ -901,10 +906,15 @@ impl App {
     }
 
     pub fn previous(&mut self) {
+        let len = self.filtered_tracks.len();
+        if len == 0 {
+            self.list_state.select(None);
+            return;
+        }
         let i = match self.list_state.selected() {
             Some(i) => {
                 if i == 0 {
-                    self.filtered_tracks.len() - 1
+                    len - 1
                 } else {
                     i - 1
                 }
@@ -1168,6 +1178,18 @@ impl App {
         }
     }
 
+    pub fn volume_up(&mut self) {
+        self.volume = (self.volume + 0.05).min(1.0);
+        self.audio.set_volume(self.volume);
+        let _ = self.save_config();
+    }
+
+    pub fn volume_down(&mut self) {
+        self.volume = (self.volume - 0.05).max(0.0);
+        self.audio.set_volume(self.volume);
+        let _ = self.save_config();
+    }
+
     fn parse_lrc(&mut self, content: &str) {
         for line in content.lines() {
             if line.starts_with('[') && line.contains(']') {
@@ -1177,12 +1199,12 @@ impl App {
                     let text = parts[1].trim();
                     let time_parts: Vec<&str> = time_str.split(':').collect();
                     if time_parts.len() == 2 {
-                        let mins = time_parts[0].parse::<u64>().unwrap_or(0);
-                        let secs = time_parts[1].parse::<f64>().unwrap_or(0.0);
-                        self.lyrics.push(crate::player::audio::LyricLine {
-                            time: Duration::from_secs(mins * 60) + Duration::from_secs_f64(secs),
-                            text: text.to_string(),
-                        });
+                        if let (Ok(mins), Ok(secs)) = (time_parts[0].parse::<u64>(), time_parts[1].parse::<f64>()) {
+                            self.lyrics.push(crate::player::audio::LyricLine {
+                                time: Duration::from_secs(mins * 60) + Duration::from_secs_f64(secs),
+                                text: text.to_string(),
+                            });
+                        }
                     }
                 }
             }
@@ -1193,4 +1215,766 @@ impl App {
 
 fn config_file_path(config_dir: &Path) -> PathBuf {
     config_dir.join("config.toml")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::config::Settings;
+    use crate::storage::index::LibraryIndex;
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+
+    fn create_test_app() -> App {
+        let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
+        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let settings = Arc::new(Settings::new().unwrap());
+        let index = Arc::new(LibraryIndex::new(&PathBuf::from("/tmp")));
+        
+        App {
+            all_tracks: Arc::from(vec![]),
+            filtered_tracks: Arc::from(vec![]),
+            playlists: vec![].into_boxed_slice(),
+            current_playlist: None,
+            current_playlist_tracks: None,
+            list_state: ListState::default(),
+            playlist_list_state: ListState::default(),
+            input_mode: InputMode::Offline,
+            previous_mode: InputMode::Offline,
+            search_query: String::new(),
+            radio_stations: vec![].into_boxed_slice(),
+            filtered_stations: vec![].into_boxed_slice(),
+            radio_list_state: ListState::default(),
+            current_track: None,
+            playback_track_list: Arc::from(vec![]),
+            playing_idx: None,
+            is_playing: false,
+            is_starting: false,
+            volume: 1.0,
+            progress: 0.0,
+            current_track_duration: Duration::from_secs(0),
+            current_pos: Duration::from_secs(0),
+            accumulated_pos: Duration::from_secs(0),
+            playback_start: None,
+            lyrics: Vec::new(),
+            current_lyric_idx: 0,
+            lyrics_scroll: 0,
+            auto_scroll: true,
+            sample_rate: 0,
+            channels: 0,
+            bitrate: 0,
+            bit_depth: 0,
+            current_genre: None,
+            current_label: None,
+            current_description: None,
+            current_cover_art: None,
+            cached_image: None,
+            image_cache: std::collections::HashMap::new(),
+            image_state: None,
+            image_picker: None,
+            last_key_event: None,
+            last_error: None,
+            audio: AudioPlayer::new_null(),
+            settings,
+            theme: crate::core::config::ThemeConfig::default().to_theme(),
+            index,
+            metadata_rx,
+            metadata_tx,
+            refresh_rx,
+            refresh_tx,
+            needs_redraw: false,
+            audio_clock: 0.0,
+            radio_loaded: false,
+            visual_state: VisualizationState::default(),
+        }
+    }
+
+    #[test]
+    fn test_visualization_state_default() {
+        let state = VisualizationState::default();
+        assert_eq!(state.velocity, 0.0);
+        assert_eq!(state.camera_zoom, 1.0);
+        assert_eq!(state.position, 0.0);
+    }
+
+    #[test]
+    fn test_app_filter_tracks() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata {
+            track_id: "1".into(),
+            title: "Song A".into(),
+            artist: "Artist X".into(),
+            album: Some("Album 1".into()),
+            file_path: None,
+            album_art_url: None,
+            duration_ms: None,
+            genres: None,
+            file_size: None,
+            file_mtime: None,
+            last_verified_at: None,
+            genre: None,
+            label: None,
+            bit_depth: None,
+            sampling_rate: None,
+            status: None,
+        });
+        let t2 = Arc::new(TrackMetadata {
+            track_id: "2".into(),
+            title: "Song B".into(),
+            artist: "Artist Y".into(),
+            album: Some("Album 2".into()),
+            ..t1.as_ref().clone()
+        });
+        app.all_tracks = Arc::from(vec![t1, t2]);
+        app.filtered_tracks = Arc::clone(&app.all_tracks);
+
+        // Filter by title
+        app.search_query = "Song A".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+        assert_eq!(app.filtered_tracks[0].title, "Song A");
+
+        // Filter by artist
+        app.search_query = "Artist Y".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+        assert_eq!(app.filtered_tracks[0].artist, "Artist Y");
+
+        // Filter by album
+        app.search_query = "Album 1".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+        assert_eq!(app.filtered_tracks[0].album.as_deref(), Some("Album 1"));
+
+        // Clear filter
+        app.search_query = "".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 2);
+    }
+
+    #[test]
+    fn test_app_filter_tracks_restore_selection() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "A".into(), ..TrackMetadata::default() });
+        let t2 = Arc::new(TrackMetadata { track_id: "2".into(), title: "B".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1, t2]);
+        app.filtered_tracks = Arc::clone(&app.all_tracks);
+        app.list_state.select(Some(1));
+
+        app.search_query = "B".to_string();
+        app.filter_tracks();
+        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.filtered_tracks[0].track_id, "2");
+    }
+
+    #[test]
+    fn test_app_filter_radio() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation {
+            name: "Radio A".into(),
+            url: "url1".into(),
+            country: "Country X".into(),
+            tags: Some("Tag 1".into()),
+        });
+        let s2 = Arc::new(crate::core::models::RadioStation {
+            name: "Radio B".into(),
+            url: "url2".into(),
+            country: "Country Y".into(),
+            tags: Some("Tag 2".into()),
+        });
+        app.radio_stations = vec![s1, s2].into_boxed_slice();
+        app.filter_radio();
+
+        app.search_query = "Radio A".to_string();
+        app.filter_radio();
+        assert_eq!(app.filtered_stations.len(), 1);
+        assert_eq!(app.filtered_stations[0].name, "Radio A");
+
+        app.search_query = "Country Y".to_string();
+        app.filter_radio();
+        assert_eq!(app.filtered_stations.len(), 1);
+        assert_eq!(app.filtered_stations[0].country, "Country Y");
+
+        app.search_query = "Tag 1".to_string();
+        app.filter_radio();
+        assert_eq!(app.filtered_stations.len(), 1);
+        assert_eq!(app.filtered_stations[0].tags.as_deref(), Some("Tag 1"));
+    }
+
+    #[test]
+    fn test_app_filter_radio_restore_selection() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "A".into(), url: "u".into(), country: "c".into(), tags: None });
+        let s2 = Arc::new(crate::core::models::RadioStation { name: "B".into(), url: "u".into(), country: "c".into(), tags: None });
+        app.radio_stations = vec![s1, s2].into_boxed_slice();
+        app.filtered_stations = app.radio_stations.clone();
+        app.radio_list_state.select(Some(1));
+
+        app.search_query = "B".to_string();
+        app.filter_radio();
+        assert_eq!(app.radio_list_state.selected(), Some(0));
+        assert_eq!(app.filtered_stations[0].name, "B");
+    }
+
+    #[test]
+    fn test_app_parse_lrc() {
+        let mut app = create_test_app();
+        let content = "[00:01.00]Line 1\n[00:02.50]Line 2\nInvalid Line\n[01:00]Line 3";
+        app.parse_lrc(content);
+        
+        assert_eq!(app.lyrics.len(), 3);
+        assert_eq!(app.lyrics[0].time, Duration::from_secs(1));
+        assert_eq!(app.lyrics[0].text, "Line 1");
+        assert_eq!(app.lyrics[1].time, Duration::from_millis(2500));
+        assert_eq!(app.lyrics[1].text, "Line 2");
+        assert_eq!(app.lyrics[2].time, Duration::from_secs(60));
+        assert_eq!(app.lyrics[2].text, "Line 3");
+    }
+
+    #[test]
+    fn test_app_parse_lrc_complex() {
+        let mut app = create_test_app();
+        let content = "[00:10.00] Second\n[00:05.00] First\n[invalid]";
+        app.parse_lrc(content);
+        assert_eq!(app.lyrics.len(), 2);
+        assert_eq!(app.lyrics[0].text, "First");
+        assert_eq!(app.lyrics[1].text, "Second");
+    }
+
+    #[test]
+    fn test_app_circular_navigation() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), ..TrackMetadata::default() });
+        let t2 = Arc::new(TrackMetadata { track_id: "2".into(), ..TrackMetadata::default() });
+        app.filtered_tracks = Arc::from(vec![t1, t2]);
+        app.list_state.select(Some(0));
+
+        app.next();
+        assert_eq!(app.list_state.selected(), Some(1));
+        app.next();
+        assert_eq!(app.list_state.selected(), Some(0));
+
+        app.previous();
+        assert_eq!(app.list_state.selected(), Some(1));
+        app.previous();
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_app_circular_playlist_navigation() {
+        let mut app = create_test_app();
+        app.playlists = vec![
+            Playlist { id: "1".into(), name: "P1".into() },
+            Playlist { id: "2".into(), name: "P2".into() },
+        ].into_boxed_slice();
+        app.playlist_list_state.select(Some(0));
+
+        app.next_playlist();
+        assert_eq!(app.playlist_list_state.selected(), Some(1));
+        app.next_playlist();
+        assert_eq!(app.playlist_list_state.selected(), Some(0));
+
+        app.previous_playlist();
+        assert_eq!(app.playlist_list_state.selected(), Some(1));
+        app.previous_playlist();
+        assert_eq!(app.playlist_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_input_mode_transitions() {
+        let mut app = create_test_app();
+        assert_eq!(app.input_mode, InputMode::Offline);
+        
+        app.input_mode = InputMode::Search;
+        assert_eq!(app.input_mode, InputMode::Search);
+        
+        app.input_mode = InputMode::PlaylistSelect;
+        assert_eq!(app.input_mode, InputMode::PlaylistSelect);
+        
+        app.input_mode = InputMode::Online;
+        assert_eq!(app.input_mode, InputMode::Online);
+    }
+
+    #[test]
+    fn test_app_play_track_out_of_bounds() {
+        let mut app = create_test_app();
+        let result = app.play_track(0);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_app_parse_lrc_invalid_formats() {
+        let mut app = create_test_app();
+        let content = "[not:a.time]Text\nNoBracketAtAll\n[00:01.00]Valid";
+        app.parse_lrc(content);
+        assert_eq!(app.lyrics.len(), 1);
+        assert_eq!(app.lyrics[0].text, "Valid");
+    }
+
+    #[test]
+    fn test_app_parse_lrc_empty() {
+        let mut app = create_test_app();
+        app.parse_lrc("");
+        assert!(app.lyrics.is_empty());
+    }
+
+    #[test]
+    fn test_app_next_previous_empty() {
+        let mut app = create_test_app();
+        app.next();
+        assert_eq!(app.list_state.selected(), None);
+        app.previous();
+        assert_eq!(app.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_app_next_playlist_empty() {
+        let mut app = create_test_app();
+        app.next_playlist();
+        assert_eq!(app.playlist_list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_app_generate_radio_art_cache() {
+        let mut app = create_test_app();
+        let name = "Test Radio";
+        app.generate_radio_art(name);
+        assert!(app.cached_image.is_some());
+        
+        let initial_img = Arc::clone(app.cached_image.as_ref().unwrap());
+        app.generate_radio_art(name);
+        assert!(Arc::ptr_eq(app.cached_image.as_ref().unwrap(), &initial_img));
+    }
+
+    #[tokio::test]
+    async fn test_app_toggle_playback_flow() {
+        let mut app = create_test_app();
+        app.audio.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
+        app.is_playing = true;
+        
+        app.toggle_playback().await;
+        assert!(!app.is_playing);
+        
+        app.toggle_playback().await;
+        assert!(app.is_playing);
+    }
+
+    #[test]
+    fn test_app_filter_tracks_no_match() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "A".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1]);
+        app.search_query = "Nonexistent".to_string();
+        app.filter_tracks();
+        assert!(app.filtered_tracks.is_empty());
+        assert_eq!(app.list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_app_filter_radio_no_match() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "A".into(), url: "u".into(), country: "c".into(), tags: None });
+        app.radio_stations = vec![s1].into_boxed_slice();
+        app.search_query = "Nonexistent".to_string();
+        app.filter_radio();
+        assert!(app.filtered_stations.is_empty());
+        assert_eq!(app.radio_list_state.selected(), None);
+    }
+
+    #[test]
+    fn test_app_play_radio_basic() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "R1".into(), url: "u".into(), country: "c".into(), tags: None });
+        app.filtered_stations = vec![s1].into_boxed_slice();
+        app.play_radio(0);
+        assert!(app.is_starting);
+        assert!(app.is_playing);
+        assert!(app.current_track.is_some());
+        assert_eq!(app.current_track.as_ref().unwrap().title, "R1");
+    }
+
+    #[test]
+    fn test_app_next_previous_playlist_bounds() {
+        let mut app = create_test_app();
+        app.playlists = vec![
+            Playlist { id: "1".into(), name: "P1".into() },
+        ].into_boxed_slice();
+        app.playlist_list_state.select(Some(0));
+        
+        app.next_playlist();
+        assert_eq!(app.playlist_list_state.selected(), Some(0));
+        app.previous_playlist();
+        assert_eq!(app.playlist_list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn test_app_filter_tracks_case_insensitive() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "ABC".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1]);
+        app.search_query = "abc".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+    }
+
+    #[test]
+    fn test_app_filter_radio_case_insensitive() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "XYZ".into(), url: "u".into(), country: "c".into(), tags: None });
+        app.radio_stations = vec![s1].into_boxed_slice();
+        app.search_query = "xyz".to_string();
+        app.filter_radio();
+        assert_eq!(app.filtered_stations.len(), 1);
+    }
+
+    #[test]
+    fn test_app_parse_lrc_out_of_order() {
+        let mut app = create_test_app();
+        let content = "[00:10.00]Late\n[00:01.00]Early";
+        app.parse_lrc(content);
+        assert_eq!(app.lyrics[0].text, "Early");
+        assert_eq!(app.lyrics[1].text, "Late");
+    }
+
+    #[test]
+    fn test_app_circular_navigation_single_item() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), ..TrackMetadata::default() });
+        app.filtered_tracks = Arc::from(vec![t1]);
+        app.list_state.select(Some(0));
+        app.next();
+        assert_eq!(app.list_state.selected(), Some(0));
+        app.previous();
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_app_toggle_playback_radio() {
+        let mut app = create_test_app();
+        app.input_mode = InputMode::Online;
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "R1".into(), url: "http://test".into(), country: "c".into(), tags: None });
+        app.filtered_stations = vec![s1].into_boxed_slice();
+        app.radio_list_state.select(Some(0));
+        app.audio.is_empty.store(true, std::sync::atomic::Ordering::Relaxed);
+        
+        app.toggle_playback().await;
+        assert!(app.is_playing);
+        assert_eq!(app.current_track.as_ref().unwrap().title, "R1");
+    }
+
+    #[test]
+    fn test_app_play_next_previous_bounds() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), ..TrackMetadata::default() });
+        app.playback_track_list = Arc::from(vec![t1]);
+        app.playing_idx = Some(0);
+        
+        app.play_next();
+        assert_eq!(app.playing_idx, Some(0));
+        app.play_previous();
+        assert_eq!(app.playing_idx, Some(0));
+    }
+
+    #[tokio::test]
+    async fn test_app_filter_tracks_partial() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "Testing".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1]);
+        app.search_query = "test".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_app_filter_tracks_special_chars() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "Rock & Roll!".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1]);
+        app.search_query = "&".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+        app.search_query = "!".to_string();
+        app.filter_tracks();
+        assert_eq!(app.filtered_tracks.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_app_filter_radio_partial() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "Jazz FM".into(), url: "u".into(), country: "c".into(), tags: None });
+        app.radio_stations = vec![s1].into_boxed_slice();
+        app.search_query = "jazz".to_string();
+        app.filter_radio();
+        assert_eq!(app.filtered_stations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_app_filter_radio_special_chars() {
+        let mut app = create_test_app();
+        let s1 = Arc::new(crate::core::models::RadioStation { name: "R-A-D-I-O".into(), url: "u".into(), country: "c".into(), tags: None });
+        app.radio_stations = vec![s1].into_boxed_slice();
+        app.search_query = "-".to_string();
+        app.filter_radio();
+        assert_eq!(app.filtered_stations.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_app_refresh_library_persistence_of_selection() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "A".into(), ..TrackMetadata::default() });
+        let t2 = Arc::new(TrackMetadata { track_id: "2".into(), title: "B".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1.clone(), t2.clone()]);
+        app.filtered_tracks = Arc::clone(&app.all_tracks);
+        app.list_state.select(Some(1)); // Select B
+
+        // Simulate refresh where B still exists but at a different index
+        let t3 = Arc::new(TrackMetadata { track_id: "3".into(), title: "0".into(), ..TrackMetadata::default() });
+        let new_tracks = vec![t3, t1, t2]; // Now B is at index 2
+        app.refresh_tx.send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        
+        app.update().await;
+        
+        assert_eq!(app.list_state.selected(), Some(2));
+        assert_eq!(app.filtered_tracks[2].track_id, "2");
+    }
+
+    #[tokio::test]
+    async fn test_app_refresh_library_selection_lost_if_removed() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "A".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1.clone()]);
+        app.filtered_tracks = Arc::clone(&app.all_tracks);
+        app.list_state.select(Some(0));
+
+        // Simulate refresh where A is gone
+        let new_tracks = vec![];
+        app.refresh_tx.send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        
+        app.update().await;
+        
+        assert_eq!(app.list_state.selected(), None);
+    }
+
+    #[tokio::test]
+    async fn test_app_refresh_library_updates_current_track_metadata() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "Old Title".into(), ..TrackMetadata::default() });
+        app.current_track = Some(t1.clone());
+        
+        // Refresh with updated title
+        let t1_new = Arc::new(TrackMetadata { track_id: "1".into(), title: "New Title".into(), ..TrackMetadata::default() });
+        app.refresh_tx.send(RefreshUpdate { all_tracks: vec![t1_new].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        
+        app.update().await;
+        
+        assert_eq!(app.current_track.unwrap().title, "New Title");
+    }
+
+    #[test]
+    fn test_input_mode_transition_full_cycle() {
+        let mut app = create_test_app();
+        app.input_mode = InputMode::PlaylistSelect;
+        app.input_mode = InputMode::Offline;
+        app.input_mode = InputMode::Online;
+        app.input_mode = InputMode::Search;
+        app.input_mode = InputMode::Offline;
+        assert_eq!(app.input_mode, InputMode::Offline);
+    }
+
+    #[test]
+    fn test_input_mode_search_to_previous_online() {
+        let mut app = create_test_app();
+        app.input_mode = InputMode::Online;
+        app.previous_mode = InputMode::Online;
+        app.input_mode = InputMode::Search;
+        // Simulate Esc or Confirm
+        app.input_mode = app.previous_mode;
+        assert_eq!(app.input_mode, InputMode::Online);
+    }
+
+    #[tokio::test]
+    async fn test_visual_state_kinematics_velocity() {
+        let mut app = create_test_app();
+        app.is_playing = true;
+        app.input_mode = InputMode::Offline;
+        
+        // Simulate amplitude increase
+        {
+            let mut dsp = app.audio.dsp_state.write().unwrap();
+            dsp.amplitude = 0.5;
+        }
+        app.update().await;
+        let v1 = app.visual_state.velocity;
+        assert!(v1 > 0.0);
+        
+        // Update again, velocity should continue to affect position
+        let p1 = app.visual_state.position;
+        app.update().await;
+        assert!(app.visual_state.position != p1);
+    }
+
+    #[tokio::test]
+    async fn test_visual_state_kinematics_angular() {
+        let mut app = create_test_app();
+        app.is_playing = true;
+        app.input_mode = InputMode::Online;
+        
+        {
+            let mut dsp = app.audio.dsp_state.write().unwrap();
+            dsp.spectrum = vec![0.1; 1024]; // High spectrum sum
+        }
+        app.update().await;
+        assert!(app.visual_state.angular_velocity > 0.0);
+        let r1 = app.visual_state.rotation;
+        app.update().await;
+        assert!(app.visual_state.rotation != r1);
+    }
+
+    #[tokio::test]
+    async fn test_metadata_update_ignores_wrong_index() {
+        let mut app = create_test_app();
+        app.playing_idx = Some(1);
+        
+        app.metadata_tx.send(TrackMetadataUpdate {
+            idx: 2, // Wrong index
+            sample_rate: 44100,
+            channels: 2,
+            bitrate: 320,
+            bit_depth: 16,
+            title: Some("New".into()),
+            artist: None, album: None, genre: None, label: None, description: None, cover_art: None,
+            duration: Duration::from_secs(100),
+        }).unwrap();
+        
+        app.update().await;
+        assert_eq!(app.sample_rate, 0); // Not updated
+    }
+
+    #[tokio::test]
+    async fn test_metadata_update_updates_verified_status() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "Unverified".into(), status: Some("unverified".into()), ..TrackMetadata::default() });
+        app.playback_track_list = Arc::from(vec![t1]);
+        app.playing_idx = Some(0);
+        app.current_track = Some(app.playback_track_list[0].clone());
+
+        app.metadata_tx.send(TrackMetadataUpdate {
+            idx: 0,
+            sample_rate: 44100,
+            channels: 2,
+            bitrate: 320,
+            bit_depth: 16,
+            title: Some("Verified Title".into()),
+            artist: None, album: None, genre: None, label: None, description: None, cover_art: None,
+            duration: Duration::from_secs(100),
+        }).unwrap();
+
+        app.update().await;
+        assert_eq!(app.current_track.as_ref().unwrap().title, "Verified Title");
+        assert_eq!(app.current_track.as_ref().unwrap().status.as_deref(), Some("verified"));
+    }
+
+    #[test]
+    fn test_generate_radio_art_caches_correctly() {
+        let mut app = create_test_app();
+        app.generate_radio_art("Radio1");
+        let cache_len = app.image_cache.len();
+        assert_eq!(cache_len, 1);
+        
+        app.generate_radio_art("Radio1");
+        assert_eq!(app.image_cache.len(), 1); // Same name, same accent
+    }
+
+    #[test]
+    fn test_generate_radio_art_reloads_on_accent_change() {
+        let mut app = create_test_app();
+        app.theme.accent = ratatui::style::Color::Red;
+        app.generate_radio_art("Radio1");
+        
+        app.theme.accent = ratatui::style::Color::Blue;
+        app.generate_radio_art("Radio1");
+        assert_eq!(app.image_cache.len(), 2); // Different cache keys due to accent
+    }
+
+    #[test]
+    fn test_volume_up_clamping() {
+        let mut app = create_test_app();
+        app.volume = 0.98;
+        app.volume_up();
+        assert!(app.volume <= 1.0);
+        
+        app.volume = 1.0;
+        app.volume_up();
+        assert_eq!(app.volume, 1.0);
+    }
+
+    #[test]
+    fn test_volume_down_clamping() {
+        let mut app = create_test_app();
+        app.volume = 0.02;
+        app.volume_down();
+        assert!(app.volume >= 0.0);
+        
+        app.volume = 0.0;
+        app.volume_down();
+        assert_eq!(app.volume, 0.0);
+    }
+
+    #[tokio::test]
+    async fn test_lyrics_auto_scroll_behavior() {
+        let mut app = create_test_app();
+        app.audio.is_empty.store(false, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..20 {
+            app.lyrics.push(crate::player::audio::LyricLine { 
+                time: Duration::from_secs(i as u64 * 10), 
+                text: format!("L{}", i) 
+            });
+        }
+        app.is_playing = true;
+        app.current_track_duration = Duration::from_secs(1000);
+        app.playback_start = Some(Instant::now() - Duration::from_secs(111));
+        app.auto_scroll = true;
+        
+        app.update().await;
+        assert!(app.current_lyric_idx >= 11);
+        assert!(app.lyrics_scroll >= 6);
+    }
+
+    #[tokio::test]
+    async fn test_lyrics_auto_scroll_disabled() {
+        let mut app = create_test_app();
+        app.auto_scroll = false;
+        app.lyrics_scroll = 42;
+        app.current_lyric_idx = 10;
+        app.update().await;
+        assert_eq!(app.lyrics_scroll, 42); // Should not change
+    }
+
+    #[tokio::test]
+    async fn test_app_refresh_library_new_track_added() {
+        let mut app = create_test_app();
+        let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "A".into(), ..TrackMetadata::default() });
+        app.all_tracks = Arc::from(vec![t1.clone()]);
+        
+        let t2 = Arc::new(TrackMetadata { track_id: "2".into(), title: "B".into(), ..TrackMetadata::default() });
+        app.refresh_tx.send(RefreshUpdate { all_tracks: vec![t1, t2].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        
+        app.update().await;
+        assert_eq!(app.all_tracks.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_visual_state_beat_flash_decay() {
+        let mut app = create_test_app();
+        app.is_playing = true;
+        app.input_mode = InputMode::Offline;
+        app.visual_state.beat_flash = 1.0;
+        
+        {
+            let mut dsp = app.audio.dsp_state.write().unwrap();
+            dsp.is_beat = false;
+        }
+        app.update().await;
+        assert!(app.visual_state.beat_flash < 1.0);
+    }
 }

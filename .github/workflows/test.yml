@@ -1,0 +1,51 @@
+name: PR Quality & Test Integrity
+
+on:
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  validate:
+    name: Lint, Test & Integrity
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Fetch all history for git diff
+
+    - name: Install System Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libasound2-dev libudev-dev
+        
+    - name: Setup Rust Toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: rustfmt, clippy
+
+    - name: Rust Cache
+      uses: swatinem/rust-cache@v2
+
+    - name: Verify Test Integrity
+      run: |
+        echo "Checking for illegal modifications to existing tests..."
+        # This checks if any line containing #[test] or within a mod tests block was DELETED or MODIFIED
+        # It allows ADDITIONS but prevents tampering with existing validation logic.
+        # We compare against the base branch of the PR.
+        git diff origin/${{ github.base_ref }}...HEAD --unified=0 | grep "^-" | grep -E "#\[test\]|mod tests|assert!" && {
+          echo "ERROR: Existing test cases or assertions were modified or deleted."
+          echo "Our policy only allows ADDING new test cases, not changing existing ones."
+          exit 1
+        } || echo "Test integrity check passed."
+
+    - name: Check Formatting
+      run: cargo fmt --all -- --check
+
+    - name: Strict Linting (Clippy)
+      run: cargo clippy --all-targets --all-features -- -D warnings
+
+    - name: Run Exhaustive Tests
+      run: cargo test --all-features -- --nocapture

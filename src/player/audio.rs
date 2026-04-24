@@ -211,10 +211,20 @@ struct AudioBackend {
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     sample_queue: Arc<ArrayQueue<f32>>,
+    is_null: bool,
 }
 
 impl AudioPlayer {
     pub fn new() -> Self {
+        Self::new_internal(false)
+    }
+
+    #[cfg(test)]
+    pub fn new_null() -> Self {
+        Self::new_internal(true)
+    }
+
+    fn new_internal(is_null: bool) -> Self {
         suppress_alsa_errors();
         let (tx, rx) = mpsc::channel();
         
@@ -224,7 +234,7 @@ impl AudioPlayer {
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let is_initializing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let mode = std::sync::Arc::new(std::sync::Mutex::new("PIPEWIRE".into()));
+        let mode = std::sync::Arc::new(std::sync::Mutex::new(if is_null { "NULL".into() } else { "PIPEWIRE".into() }));
         let last_error = std::sync::Arc::new(std::sync::Mutex::new(None));
 
         let mut analyzer = AudioAnalyzer::new();
@@ -273,15 +283,19 @@ impl AudioPlayer {
                 is_initializing_shared: backend_init,
                 last_error_shared: backend_last_err,
                 sample_queue: backend_queue,
+                is_null,
             };
 
-            let _ = backend.try_init(false);
+            if !is_null {
+                let _ = backend.try_init(false);
+            }
 
             loop {
                 let cmd = rx.recv_timeout(Duration::from_millis(50));
                 match cmd {
                     Ok(AudioCmd::Init) => {
                         tracing::debug!("AudioCmd::Init received");
+                        if backend.is_null { continue; }
                         backend
                             .is_initializing_shared
                             .store(true, std::sync::atomic::Ordering::Relaxed);
@@ -301,6 +315,10 @@ impl AudioPlayer {
                     }
                     Ok(AudioCmd::Play(path)) => {
                         tracing::debug!(path = ?path, "AudioCmd::Play received");
+                        if backend.is_null {
+                            backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
+                            continue;
+                        }
                         backend.active_request_id = 0; // Local playback doesn't need async registration
                         let res = backend.play(path);
                         if let Err(e) = &res {
@@ -316,6 +334,11 @@ impl AudioPlayer {
                         tracing::info!(url = %url, request_id, "AudioCmd::PlayStream received");
                         backend.stop_sink();
                         backend.active_request_id = request_id;
+
+                        if backend.is_null {
+                            backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
+                            continue;
+                        }
 
                         // Ensure we have a handle before spawning radio thread
                         if backend.handle.is_none() {
@@ -435,10 +458,12 @@ impl AudioPlayer {
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
 
-                backend.is_empty_shared.store(
-                    backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true),
-                    std::sync::atomic::Ordering::Relaxed,
-                );
+                if !backend.is_null {
+                    backend.is_empty_shared.store(
+                        backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true),
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
             }
         });
 
@@ -622,5 +647,256 @@ impl AudioBackend {
 
         tracing::error!("No audio handle available after initialization attempts");
         Err("Playback failed".into())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    struct TestSource {
+        samples: std::vec::IntoIter<f32>,
+    }
+    impl Iterator for TestSource {
+        type Item = f32;
+        fn next(&mut self) -> Option<Self::Item> { self.samples.next() }
+    }
+    impl rodio::Source for TestSource {
+        fn current_frame_len(&self) -> Option<usize> { None }
+        fn channels(&self) -> u16 { 1 }
+        fn sample_rate(&self) -> u32 { 44100 }
+        fn total_duration(&self) -> Option<Duration> { None }
+    }
+
+    #[test]
+    fn test_streaming_reader_new() {
+        let data = vec![1u8; 20000];
+        let reader = StreamingReader::new(Cursor::new(data.clone()));
+        assert_eq!(reader.header_buffer.len(), 20000);
+        assert_eq!(reader.pos, 20000);
+        assert_eq!(reader.header_read_pos, 0);
+    }
+
+    #[test]
+    fn test_streaming_reader_read() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        let mut buf = [0u8; 10];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(n, 10);
+        assert_eq!(buf, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_start() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        let pos = reader.seek(SeekFrom::Start(10)).unwrap();
+        assert_eq!(pos, 10);
+        assert_eq!(reader.header_read_pos, 10);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_current() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        reader.seek(SeekFrom::Start(10)).unwrap();
+        let pos = reader.seek(SeekFrom::Current(5)).unwrap();
+        assert_eq!(pos, 15);
+        let pos = reader.seek(SeekFrom::Current(-10)).unwrap();
+        assert_eq!(pos, 5);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_current_backward_past_header() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        reader.seek(SeekFrom::Start(10)).unwrap();
+        let pos = reader.seek(SeekFrom::Current(-15)).unwrap();
+        assert_eq!(pos, 10);
+    }
+
+    #[test]
+    fn test_streaming_reader_read_past_header() {
+        let data = (0..150u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        let mut buf = vec![0u8; 150];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(n, 150);
+        assert_eq!(buf[149], 149);
+    }
+
+    #[test]
+    fn test_streaming_reader_empty_source() {
+        let data: Vec<u8> = vec![];
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        assert_eq!(reader.header_buffer.len(), 0);
+        let mut buf = [0u8; 10];
+        let n = reader.read(&mut buf).unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[test]
+    fn test_visualizer_tracker_properties() {
+        let samples = vec![0.1f32; 100];
+        let tracker = VisualizerTracker {
+            inner: TestSource { samples: samples.into_iter() },
+            sample_queue: Arc::new(ArrayQueue::new(10)),
+            sample_counter: 0,
+        };
+        use rodio::Source;
+        assert_eq!(tracker.channels(), 1);
+        assert_eq!(tracker.sample_rate(), 44100);
+    }
+
+    #[test]
+    fn test_visualizer_tracker_sampling_overflow() {
+        let samples = vec![0.1f32; 100];
+        let queue = Arc::new(ArrayQueue::new(1));
+        let mut tracker = VisualizerTracker {
+            inner: TestSource { samples: samples.into_iter() },
+            sample_queue: queue.clone(),
+            sample_counter: 0,
+        };
+        for _ in 0..4 { tracker.next(); }
+        assert_eq!(queue.len(), 1);
+        for _ in 0..4 { tracker.next(); }
+        assert_eq!(queue.len(), 1);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_start_at_current() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        reader.seek(SeekFrom::Start(10)).unwrap();
+        let pos = reader.seek(SeekFrom::Start(10)).unwrap();
+        assert_eq!(pos, 10);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_current_forward_past_header() {
+        let data = (0..150u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        let pos = reader.seek(SeekFrom::Current(50)).unwrap();
+        assert_eq!(pos, 50);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_current_zero() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        reader.seek(SeekFrom::Start(10)).unwrap();
+        let pos = reader.seek(SeekFrom::Current(0)).unwrap();
+        assert_eq!(pos, 10);
+    }
+
+    #[test]
+    fn test_streaming_reader_seek_end() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        let pos = reader.seek(SeekFrom::End(0)).unwrap();
+        assert_eq!(pos, 0);
+    }
+
+    #[test]
+    fn test_visualizer_tracker_sampling() {
+        let samples = vec![0.1f32, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+        let queue = Arc::new(ArrayQueue::new(10));
+        let mut tracker = VisualizerTracker {
+            inner: TestSource { samples: samples.into_iter() },
+            sample_queue: queue.clone(),
+            sample_counter: 0,
+        };
+        tracker.next();
+        tracker.next();
+        tracker.next();
+        let s4 = tracker.next().unwrap();
+        assert_eq!(s4, 0.4);
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.pop().unwrap(), 0.4);
+    }
+
+    #[test]
+    fn test_streaming_reader_slow_input() {
+        struct SlowReader {
+            data: Vec<u8>,
+            pos: usize,
+        }
+        impl Read for SlowReader {
+            fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+                if self.pos >= self.data.len() { return Ok(0); }
+                if buf.is_empty() { return Ok(0); }
+                buf[0] = self.data[self.pos];
+                self.pos += 1;
+                Ok(1)
+            }
+        }
+        let data = vec![1, 2, 3, 4, 5];
+        let mut reader = StreamingReader::new(SlowReader { data, pos: 0 });
+        let mut buf = [0u8; 10];
+        let n = reader.read(&mut buf).unwrap();
+        assert!(n > 0);
+    }
+
+    #[test]
+    fn test_streaming_reader_consecutive_seeks() {
+        let data = (0..100u8).collect::<Vec<_>>();
+        let mut reader = StreamingReader::new(Cursor::new(data));
+        reader.seek(SeekFrom::Start(10)).unwrap();
+        reader.seek(SeekFrom::Start(20)).unwrap();
+        reader.seek(SeekFrom::Current(-5)).unwrap();
+        let pos = reader.seek(SeekFrom::Current(2)).unwrap();
+        assert_eq!(pos, 17);
+    }
+
+    #[test]
+    fn test_visualizer_tracker_empty_source() {
+        let samples: Vec<f32> = vec![];
+        let queue = Arc::new(ArrayQueue::new(10));
+        let mut tracker = VisualizerTracker {
+            inner: TestSource { samples: samples.into_iter() },
+            sample_queue: queue.clone(),
+            sample_counter: 0,
+        };
+        assert!(tracker.next().is_none());
+        assert_eq!(queue.len(), 0);
+    }
+
+    #[test]
+    fn test_visualizer_tracker_exactly_4_samples() {
+        let samples = vec![0.1, 0.2, 0.3, 0.4];
+        let queue = Arc::new(ArrayQueue::new(10));
+        let mut tracker = VisualizerTracker {
+            inner: TestSource { samples: samples.into_iter() },
+            sample_queue: queue.clone(),
+            sample_counter: 0,
+        };
+        for _ in 0..4 { tracker.next(); }
+        assert_eq!(queue.len(), 1);
+        assert_eq!(queue.pop().unwrap(), 0.4);
+    }
+
+    #[test]
+    fn test_visualizer_tracker_10_samples() {
+        let samples = vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+        let queue = Arc::new(ArrayQueue::new(10));
+        let mut tracker = VisualizerTracker {
+            inner: TestSource { samples: samples.into_iter() },
+            sample_queue: queue.clone(),
+            sample_counter: 0,
+        };
+        for _ in 0..10 { tracker.next(); }
+        assert_eq!(queue.len(), 2);
+    }
+
+    #[test]
+    fn test_lyric_line_display() {
+        let line = LyricLine {
+            time: Duration::from_secs(10),
+            text: "Hello World".to_string(),
+        };
+        assert_eq!(line.text, "Hello World");
+        assert_eq!(line.time.as_secs(), 10);
     }
 }

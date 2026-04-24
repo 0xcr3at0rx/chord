@@ -4,12 +4,9 @@ The primary goal is the maintenance of a high-performance, bloat-free, and techn
 
 ## Standards
 
-1.  **Zero Bloat**: Avoid adding unnecessary features, dependencies, or complexity. Simplicity is considered a core feature.
-2.  **Performance First**: Every change must maintain or improve the speed and efficiency of the application.
-3.  **Continuous Improvement**: Every contribution should leave the codebase cleaner and more maintainable than it was found.
-4.  **Technical Focus**: All discussions and contributions must remain focused on technical merits and project improvement.
-5.  **Direct Communication**: Interaction should be concise, objective, and professional.
+1.  **Zero Bloat**: No unnecessary features, dependencies, or complexity are allowed. Simplicity is our core technical feature.
+2.  **Performance First**: Every change must maintain or improve the current performance. Performance degradation is considered a regression.
+3.  **Technical Focus**: All discussions must remain objective, technical, and focused on project improvement.
+4.  **Efficiency**: Code must be optimized (SIMD where applicable), memory-efficient (minimal allocations), and lock-free where possible.
+5.  **Direct Communication**: Interaction should be concise and professional.
 
-## Maintenance
-
-Long-term health of the project is prioritized over rapid feature expansion. Features that do not serve the core purpose of a fast, beautiful terminal music player do not belong in the codebase.

@@ -10,23 +10,6 @@ Chord is designed for extreme efficiency, targeting low CPU and RAM usage even w
 - **Lazy Indexing**: Only basic file info is scanned on startup; full ID3 tags are extracted on-demand.
 - **Efficient Allocator (`mimalloc`)**: Reduces memory fragmentation and improves multi-threaded performance.
 
-## Profiling with Flamegraphs
-To identify CPU hotspots, we recommend using `cargo-flamegraph`.
-
-1. **Install Flamegraph**:
-   ```bash
-   cargo install flamegraph
-   ```
-
-2. **Run Profiler**:
-   ```bash
-   # Note: You may need root permissions or specialized perf settings on Linux
-   cargo flamegraph
-   ```
-
-3. **Analyze**:
-   Open the generated `flamegraph.svg` in any browser. Look for wide "plateaus" which indicate functions consuming significant CPU time.
-
 ## Native Build
 For maximum performance on your specific machine, always build with native CPU instructions enabled:
 

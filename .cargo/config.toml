@@ -1,0 +1,12 @@
+[build]
+rustflags = ["-C", "target-cpu=native"]
+
+[alias]
+# Pre-PR check: fmt, lint, and exhaustive testing
+check-all = ["test", "--all-features", "--", "--nocapture"]
+check-full = [
+    "fmt", "--all", "--", "--check",
+    "clippy", "--all-targets", "--all-features", "--", "-D warnings",
+    "test", "--all-features", "--", "--nocapture"
+]
+xtest = ["test", "--all-features", "--", "--nocapture"]

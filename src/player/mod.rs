@@ -131,14 +131,10 @@ async fn run_app<B: Backend>(
                             app.toggle_playback().await;
                         }
                         KEY_VOL_UP => {
-                            app.volume = (app.volume + 0.05).min(1.0);
-                            app.audio.set_volume(app.volume);
-                            let _ = app.save_config();
+                            app.volume_up();
                         }
                         KEY_VOL_DOWN => {
-                            app.volume = (app.volume - 0.05).max(0.0);
-                            app.audio.set_volume(app.volume);
-                            let _ = app.save_config();
+                            app.volume_down();
                         }
                         KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => app.next(),
                         KEY_LIST_UP | KEY_LIST_UP_VIM => app.previous(),
@@ -200,12 +196,10 @@ async fn run_app<B: Backend>(
                             app.toggle_playback().await;
                         }
                         KEY_VOL_UP => {
-                            app.volume = (app.volume + 0.05).min(1.0);
-                            app.audio.set_volume(app.volume);
+                            app.volume_up();
                         }
                         KEY_VOL_DOWN => {
-                            app.volume = (app.volume - 0.05).max(0.0);
-                            app.audio.set_volume(app.volume);
+                            app.volume_down();
                         }
                         KEY_LIST_DOWN | KEY_LIST_DOWN_VIM => {
                             let len = app.filtered_stations.len();

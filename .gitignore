@@ -30,8 +30,8 @@ env/
 
 # Chord specific
 cache.json
-config.toml
-radio.toml
+/config.toml
+/radio.toml
 
 # RustRover
 #  JetBrains specific template is maintained in a separate JetBrains.gitignore that can

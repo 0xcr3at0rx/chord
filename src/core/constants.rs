@@ -76,3 +76,35 @@ pub fn interpolate_color(c1: Color, c2: Color, t: f64) -> Color {
         (b1 as f64 * (1.0 - t) + b2 as f64 * t) as u8,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_color_to_rgb() {
+        assert_eq!(color_to_rgb(Color::Rgb(10, 20, 30)), (10, 20, 30));
+        assert_eq!(color_to_rgb(Color::Black), (0, 0, 0));
+        assert_eq!(color_to_rgb(Color::White), (200, 200, 200));
+        assert_eq!(color_to_rgb(Color::Reset), (150, 150, 150));
+    }
+
+    #[test]
+    fn test_interpolate_color() {
+        let c1 = Color::Rgb(0, 0, 0);
+        let c2 = Color::Rgb(255, 255, 255);
+        
+        // Midpoint
+        assert_eq!(interpolate_color(c1, c2, 0.5), Color::Rgb(127, 127, 127));
+        
+        // Start
+        assert_eq!(interpolate_color(c1, c2, 0.0), Color::Rgb(0, 0, 0));
+        
+        // End
+        assert_eq!(interpolate_color(c1, c2, 1.0), Color::Rgb(255, 255, 255));
+        
+        // Clamping
+        assert_eq!(interpolate_color(c1, c2, -1.0), Color::Rgb(0, 0, 0));
+        assert_eq!(interpolate_color(c1, c2, 2.0), Color::Rgb(255, 255, 255));
+    }
+}

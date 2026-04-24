@@ -79,3 +79,58 @@ pub const DEFAULT_RADIOS: &[(&str, &str, &str, &str)] = &[
         "Chillout, Ambient",
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_radio_stations_not_empty() {
+        assert!(!DEFAULT_RADIOS.is_empty());
+    }
+
+    #[test]
+    fn test_radio_stations_valid_fields() {
+        for (name, url, country, tags) in DEFAULT_RADIOS {
+            assert!(!name.is_empty(), "Station name should not be empty");
+            assert!(!url.is_empty(), "Station URL should not be empty for {}", name);
+            assert!(!country.is_empty(), "Station country should not be empty for {}", name);
+            assert!(!tags.is_empty(), "Station tags should not be empty for {}", name);
+        }
+    }
+
+    #[test]
+    fn test_radio_stations_url_format() {
+        for (name, url, _, _) in DEFAULT_RADIOS {
+            assert!(
+                url.starts_with("http://") || url.starts_with("https://"),
+                "URL for {} must start with http:// or https://, found: {}",
+                name,
+                url
+            );
+        }
+    }
+
+    #[test]
+    fn test_radio_stations_unique_names() {
+        let mut names = std::collections::HashSet::new();
+        for (name, _, _, _) in DEFAULT_RADIOS {
+            assert!(names.insert(name), "Duplicate station name found: {}", name);
+        }
+    }
+
+    #[test]
+    fn test_radio_stations_unique_urls() {
+        let mut urls = std::collections::HashSet::new();
+        for (_, url, _, _) in DEFAULT_RADIOS {
+            assert!(urls.insert(url), "Duplicate station URL found: {}", url);
+        }
+    }
+
+    #[test]
+    fn test_radio_stations_tags_format() {
+        for (name, _, _, tags) in DEFAULT_RADIOS {
+            assert!(tags.contains(", ") || !tags.is_empty(), "Tags for {} should be comma-separated or non-empty", name);
+        }
+    }
+}

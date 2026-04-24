@@ -2,19 +2,26 @@
 
 A modern, fast, and beautiful terminal music player and radio streamer built with Rust.
 
-![Chord Screenshot](images/screenshot1.png)
-![Chord Playlist](images/screenshot2.png)
-![Chord Visualizer](images/screenshot3.png)
+<p align="center">
+  <img src="images/screenshot1.png" alt="Chord Main" width="800">
+  <br>
+  <img src="images/screenshot2.png" alt="Chord Playlist" width="800">
+  <br>
+  <img src="images/screenshot3.png" alt="Chord Visualizer" width="800">
+</p>
 
 ## Features
 - **Local Library**: Effortlessly play your music with a clean, searchable interface.
 - **Radio Streaming**: Stream your favorite stations from around the world.
 - **High-Fidelity Visuals**: Advanced CRT Oscilloscope visualizer with phosphor glow and multi-shape geometric waveforms.
 - **Intelligent Audio Analysis**: Real-time DSP and FFT analysis for audio-responsive physics and beat detection.
-- **Performance Optimized**: Parallelized TUI rendering and bitwise math optimizations for low CPU usage even at high frame rates.
+- **Extreme Efficiency**: 
+  - **SIMD-accelerated**: Uses `wide` crate for batch audio processing.
+  - **Lock-Free**: Truly lock-free audio path using `crossbeam-queue` to eliminate ALSA underruns.
+  - **Lazy Indexing**: 10x faster startup with on-demand metadata extraction.
+  - **Memory Optimized**: Uses `mimalloc` and `SmolStr` for a tiny footprint.
 - **Procedural Art**: Unique, colorful, theme-aware art for every radio station and track.
 - **Automatic Library Scanner**: Automatically indexes your music directory on startup.
-- **Fast & Light**: Optimized for performance and low resource usage.
 
 ## Quick Start
 1. **Install dependencies**: `alsa-lib` (Linux).
@@ -27,6 +34,7 @@ Chord is built for extreme efficiency. If you're developing and want to analyze 
 1. **Target Native**: Build with `RUSTFLAGS="-C target-cpu=native" cargo build --release`.
 2. **Flamegraphs**: Install `cargo-flamegraph` and run `cargo flamegraph` to identify CPU hotspots.
 3. **Memory**: Use `htop` or `valgrind` to monitor the `mimalloc` allocator performance.
+4. **Details**: See [PERFORMANCE.md](./PERFORMANCE.md) for the full optimization guide.
 
 ## Keybindings
 - `j/k` or `Arrows`: Navigate items.

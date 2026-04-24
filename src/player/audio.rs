@@ -240,6 +240,18 @@ impl AudioPlayer {
         let mut analyzer = AudioAnalyzer::new();
         let dsp_state = analyzer.state.clone();
 
+        if is_null {
+            return Self {
+                cmd_tx: tx,
+                is_empty,
+                has_error,
+                is_initializing,
+                mode,
+                last_error,
+                dsp_state,
+            };
+        }
+
         let backend_empty = is_empty.clone();
         let backend_error = has_error.clone();
         let backend_init = is_initializing.clone();
@@ -614,7 +626,7 @@ impl AudioBackend {
                 tracing::error!(path = ?path, error = %e, "Failed to open audio file");
                 e.to_string()
             })?;
-            let source = Decoder::new(BufReader::new(file)).map_err(|e| {
+            let source = Decoder::new(BufReader::with_capacity(65536, file)).map_err(|e| {
                 tracing::error!(path = ?path, error = %e, "Failed to decode audio file");
                 e.to_string()
             })?;

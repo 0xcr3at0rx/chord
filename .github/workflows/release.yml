@@ -15,14 +15,25 @@ jobs:
     strategy:
       matrix:
         include:
+    strategy:
+      matrix:
+        include:
           - target: x86_64-unknown-linux-gnu
             artifact_name: chord
             asset_name: chord-linux-x86_64
             bundle: true
+          - target: x86_64-unknown-linux-musl
+            artifact_name: chord
+            asset_name: chord-linux-x86_64-musl
+            bundle: false
           - target: aarch64-unknown-linux-gnu
             artifact_name: chord
             asset_name: chord-linux-aarch64
             bundle: true
+          - target: aarch64-unknown-linux-musl
+            artifact_name: chord
+            asset_name: chord-linux-aarch64-musl
+            bundle: false
 
     steps:
       - name: Checkout repository
@@ -35,25 +46,25 @@ jobs:
 
       - name: Install Linux dependencies
         run: |
-          if [ "${{ matrix.target }}" == "aarch64-unknown-linux-gnu" ]; then
+          sudo apt-get update
+          if [[ "${{ matrix.target }}" == *"aarch64"* ]]; then
             sudo dpkg --add-architecture arm64
-            # Fix Noble (24.04) sources to be amd64-only to avoid 404s when searching for arm64 on main mirrors
             if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
               sudo sed -i 's/^Architectures: .*/Architectures: amd64/g' /etc/apt/sources.list.d/ubuntu.sources || true
-              if ! grep -q "Architectures: amd64" /etc/apt/sources.list.d/ubuntu.sources; then
-                sudo sed -i 's/Types: deb/Types: deb\nArchitectures: amd64/' /etc/apt/sources.list.d/ubuntu.sources
-              fi
             fi
             echo -e "Types: deb\nURIs: http://ports.ubuntu.com/ubuntu-ports\nSuites: noble noble-updates noble-security\nComponents: main restricted universe multiverse\nArchitectures: arm64" | sudo tee /etc/apt/sources.list.d/arm64.sources
-            
             sudo apt-get update
             sudo apt-get install -y libasound2-dev:arm64 gcc-aarch64-linux-gnu pkg-config
             echo "PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig" >> $GITHUB_ENV
             echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
             echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
           else
-            sudo apt-get update
             sudo apt-get install -y libasound2-dev pkg-config fuse libfuse2
+          fi
+          
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            sudo apt-get install -y musl-tools
           fi
 
       - name: Install Packaging Tools
@@ -68,8 +79,11 @@ jobs:
 
       - name: Build
         run: |
+          # Use RUSTFLAGS to ensure static linking where possible for musl
+          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
+            export RUSTFLAGS="-C target-feature=+crt-static"
+          fi
           cargo build --release --target ${{ matrix.target }}
-          # Copy to default release dir for packaging tools that might expect it there
           mkdir -p target/release
           cp target/${{ matrix.target }}/release/${{ matrix.artifact_name }} target/release/
         shell: bash

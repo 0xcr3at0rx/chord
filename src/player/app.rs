@@ -540,17 +540,11 @@ impl App {
             self.is_starting = true;
             self.audio.play_stream(url);
             self.is_playing = true;
-            self.current_track = None;
-            self.accumulated_pos = Duration::from_secs(0);
-            self.current_pos = Duration::from_secs(0);
-            self.playback_start = Some(Instant::now());
-            self.lyrics.clear();
-            self.last_error = None;
-            self.generate_radio_art(&name);
-
+            self.current_track = None; // Reset before setting new one for radio
+            
             self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
                 track_id: "radio".into(),
-                title: name.into(),
+                title: name.clone(), // Use cloned name
                 artist: format!("RADIO: {}", country).into(),
                 album: tags.clone(),
                 album_art_url: None,
@@ -564,8 +558,17 @@ impl App {
                 label: None,
                 bit_depth: None,
                 sampling_rate: None,
-                status: Some("verified".into()),
+                status: Some("radio".into()),
             }));
+
+            self.clean_image_cache();
+            
+            self.accumulated_pos = Duration::from_secs(0);
+            self.current_pos = Duration::from_secs(0);
+            self.playback_start = Some(Instant::now());
+            self.lyrics.clear();
+            self.last_error = None;
+            self.generate_radio_art(&name); // Use cloned name
         }
     }
 
@@ -731,28 +734,8 @@ impl App {
                     }
                 }
 
-                let mut keys_to_keep = std::collections::HashSet::new();
-
                 if let Some(track) = &self.current_track {
                     let cache_key = format!("{}_{:?}", track.track_id, self.theme.accent);
-                    keys_to_keep.insert(cache_key.clone());
-
-                    // Add next and prev track ids to keys_to_keep to retain them
-                    if !self.playback_track_list.is_empty() {
-                        let len = self.playback_track_list.len();
-                        let idx = self.playing_idx.unwrap_or(0);
-                        let next_idx = (idx + 1) % len;
-                        let prev_idx = (idx + len - 1) % len;
-
-                        if let Some(next_t) = self.playback_track_list.get(next_idx) {
-                            keys_to_keep
-                                .insert(format!("{}_{:?}", next_t.track_id, self.theme.accent));
-                        }
-                        if let Some(prev_t) = self.playback_track_list.get(prev_idx) {
-                            keys_to_keep
-                                .insert(format!("{}_{:?}", prev_t.track_id, self.theme.accent));
-                        }
-                    }
 
                     if let Some(img) = self.image_cache.get(&cache_key) {
                         self.cached_image = Some(Arc::clone(img));
@@ -779,18 +762,9 @@ impl App {
                         // Clear raw bytes after decoding to save RAM
                         self.current_cover_art = None;
                     }
-
                 }
 
-                // Retain only adjacent items and the CURRENT radio station art
-                let current_radio_key = self.current_track.as_ref()
-                    .and_then(|t| if t.status.as_deref() == Some("radio") {
-                        Some(format!("radio_{}_{:?}", t.title, self.theme.accent))
-                    } else { None });
-
-                self.image_cache.retain(|k, _| {
-                    keys_to_keep.contains(k) || (current_radio_key.as_ref() == Some(k))
-                });
+                self.clean_image_cache();
 
                 self.needs_redraw = true;
             }
@@ -986,6 +960,7 @@ impl App {
         self.is_playing = false;
         self.is_starting = true;
 
+        // Reset tech info immediately
         self.current_genre = None;
         self.current_label = None;
         self.current_description = None;
@@ -995,21 +970,34 @@ impl App {
         self.bitrate = 0;
         self.bit_depth = 0;
 
+        // Proactively clean image cache to free RAM during transitions
+        self.playing_idx = Some(idx);
+        self.current_track = Some(track.clone()); // Update current track BEFORE cleaning
+        if update_playback_list {
+            self.playback_track_list = Arc::clone(&self.filtered_tracks);
+        }
+        self.clean_image_cache();
+
         if let Some(path_str) = &track.file_path {
             let path = PathBuf::from(path_str);
             if path.exists() {
                 self.load_lyrics(&path);
                 self.audio.play(path.clone());
                 self.is_playing = true;
-                self.playing_idx = Some(idx);
-                self.current_track = Some(track.clone());
-                if update_playback_list {
-                    self.playback_track_list = Arc::clone(&self.filtered_tracks);
-                }
+                // self.current_track = Some(track.clone()); // Already updated above
                 self.accumulated_pos = Duration::from_secs(0);
                 self.current_pos = Duration::from_secs(0);
                 self.playback_start = Some(Instant::now());
                 self.last_error = None;
+
+                // Optimization: If track is already verified, use cached metadata
+                if track.status.as_deref() == Some("verified") {
+                    self.sample_rate = track.sampling_rate.unwrap_or(0);
+                    self.bit_depth = track.bit_depth.unwrap_or(0);
+                    // Channels and bitrate are not in basic metadata, still need probing if we want them,
+                    // but we can skip if we prioritize speed/memory.
+                    // For now, let's still probe but only if necessary.
+                }
 
                 let tx = self.metadata_tx.clone();
                 tokio::task::spawn_blocking(move || {
@@ -1042,6 +1030,9 @@ impl App {
                             desc = tag
                                 .get_string(&lofty::tag::ItemKey::Comment)
                                 .map(|s| s.to_string());
+                            
+                            // Only extract art if we don't already have a themed version in some cache?
+                            // Actually, metadata extraction is per-play now, so we always check.
                             if let Some(picture) = tag.pictures().first() {
                                 art = Some(picture.data().to_vec());
                             }
@@ -1073,6 +1064,46 @@ impl App {
             }
         } else {
             Err(ChordError::Playback("No file path provided".into()))
+        }
+    }
+
+    fn clean_image_cache(&mut self) {
+        let mut keys_to_keep = std::collections::HashSet::new();
+
+        if let Some(track) = &self.current_track {
+            keys_to_keep.insert(format!("{}_{:?}", track.track_id, self.theme.accent));
+
+            if !self.playback_track_list.is_empty() {
+                let len = self.playback_track_list.len();
+                let idx = self.playing_idx.unwrap_or(0);
+                let next_idx = (idx + 1) % len;
+                let prev_idx = (idx + len - 1) % len;
+
+                if let Some(next_t) = self.playback_track_list.get(next_idx) {
+                    keys_to_keep.insert(format!("{}_{:?}", next_t.track_id, self.theme.accent));
+                }
+                if let Some(prev_t) = self.playback_track_list.get(prev_idx) {
+                    keys_to_keep.insert(format!("{}_{:?}", prev_t.track_id, self.theme.accent));
+                }
+            }
+        }
+
+        let current_radio_key = self.current_track.as_ref()
+            .and_then(|t| if t.status.as_deref() == Some("radio") {
+                Some(format!("radio_{}_{:?}", t.title, self.theme.accent))
+            } else { None });
+
+        self.image_cache.retain(|k, _| {
+            keys_to_keep.contains(k) || (current_radio_key.as_ref() == Some(k))
+        });
+        
+        // If current image is not in cache anymore, clear it
+        if let Some(track) = &self.current_track {
+            let cache_key = format!("{}_{:?}", track.track_id, self.theme.accent);
+            if !self.image_cache.contains_key(&cache_key) && current_radio_key.as_ref() != Some(&cache_key) {
+                self.cached_image = None;
+                self.image_state = None;
+            }
         }
     }
 

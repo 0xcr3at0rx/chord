@@ -134,6 +134,7 @@ pub struct App {
     pub index: Arc<LibraryIndex>,
     pub metadata_rx: mpsc::Receiver<TrackMetadataUpdate>,
     pub metadata_tx: mpsc::Sender<TrackMetadataUpdate>,
+    pub metadata_worker_tx: mpsc::Sender<(usize, PathBuf, u64)>,
     pub active_metadata_request: Arc<std::sync::atomic::AtomicU64>,
     pub refresh_rx: mpsc::Receiver<RefreshUpdate>,
     pub refresh_tx: mpsc::Sender<RefreshUpdate>,
@@ -204,7 +205,78 @@ impl App {
     ) -> ChordResult<App> {
         tracing::info!("Creating new App instance");
         let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (worker_tx, mut worker_rx) = mpsc::channel::<(usize, PathBuf, u64)>(16);
         let (refresh_tx, refresh_rx) = mpsc::channel(2);
+
+        let active_metadata_request = Arc::new(std::sync::atomic::AtomicU64::new(0));
+
+        // Spawn dedicated Metadata Worker Thread
+        let m_tx = metadata_tx.clone();
+        let active_req_clone = Arc::clone(&active_metadata_request);
+        std::thread::spawn(move || {
+            while let Some((idx, path, request_id)) = worker_rx.blocking_recv() {
+                // Pre-check
+                if active_req_clone.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                    continue;
+                }
+
+                if let Ok(probed) = lofty::read_from_path(&path) {
+                    use lofty::file::AudioFile;
+                    use lofty::prelude::*;
+                    let props = probed.properties();
+                    let duration = props.duration();
+
+                    if active_req_clone.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                        continue;
+                    }
+
+                    let mut genre = None;
+                    let mut label = None;
+                    let mut desc = None;
+                    let mut art = None;
+                    let mut title = None;
+                    let mut artist = None;
+                    let mut album = None;
+
+                    if let Some(tag) = probed.primary_tag() {
+                        title = tag.title().map(|s| s.to_string());
+                        artist = tag.artist().map(|s| s.to_string());
+                        album = tag.album().map(|s| s.to_string());
+                        genre = tag.genre().map(|s| s.to_string());
+                        label = tag
+                            .get_string(&lofty::tag::ItemKey::Label)
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                tag.get_string(&lofty::tag::ItemKey::Publisher)
+                                    .map(|s| s.to_string())
+                            });
+                        desc = tag
+                            .get_string(&lofty::tag::ItemKey::Comment)
+                            .map(|s| s.to_string());
+                        
+                        if let Some(picture) = tag.pictures().first() {
+                            art = Some(picture.data().to_vec());
+                        }
+                    }
+
+                    if active_req_clone.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                        continue;
+                    }
+
+                    let _ = m_tx.blocking_send(TrackMetadataUpdate {
+                        idx,
+                        sample_rate: props.sample_rate().unwrap_or(0),
+                        channels: props.channels().unwrap_or(0),
+                        bitrate: props.audio_bitrate().unwrap_or(0),
+                        bit_depth: props.bit_depth().unwrap_or(0),
+                        title, artist, album, genre, label,
+                        description: desc,
+                        cover_art: art,
+                        duration,
+                    });
+                }
+            }
+        });
 
         let config = settings
             .config
@@ -305,7 +377,8 @@ impl App {
             index,
             metadata_rx,
             metadata_tx,
-            active_metadata_request: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            metadata_worker_tx: worker_tx,
+            active_metadata_request,
             refresh_rx,
             refresh_tx,
             is_refreshing: false,
@@ -1008,85 +1081,12 @@ impl App {
                 if track.status.as_deref() == Some("verified") {
                     self.sample_rate = track.sampling_rate.unwrap_or(0);
                     self.bit_depth = track.bit_depth.unwrap_or(0);
-                    // Channels and bitrate are not in basic metadata, still need probing if we want them,
-                    // but we can skip if we prioritize speed/memory.
-                    // For now, let's still probe but only if necessary.
                 }
 
-                let tx = self.metadata_tx.clone();
                 let active_req = Arc::clone(&self.active_metadata_request);
                 let request_id = active_req.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-
-                tokio::task::spawn_blocking(move || {
-                    // Pre-check: has a new request already started?
-                    if active_req.load(std::sync::atomic::Ordering::SeqCst) != request_id {
-                        return;
-                    }
-
-                    if let Ok(probed) = lofty::read_from_path(&path) {
-                        use lofty::file::AudioFile;
-                        use lofty::prelude::*;
-                        let props = probed.properties();
-                        let duration = props.duration();
-
-                        // Post-read check: user might have skipped while we were reading tags
-                        if active_req.load(std::sync::atomic::Ordering::SeqCst) != request_id {
-                            return;
-                        }
-
-                        let mut genre = None;
-                        let mut label = None;
-                        let mut desc = None;
-                        let mut art = None;
-                        let mut title = None;
-                        let mut artist = None;
-                        let mut album = None;
-
-                        if let Some(tag) = probed.primary_tag() {
-                            title = tag.title().map(|s| s.to_string());
-                            artist = tag.artist().map(|s| s.to_string());
-                            album = tag.album().map(|s| s.to_string());
-                            genre = tag.genre().map(|s| s.to_string());
-                            label = tag
-                                .get_string(&lofty::tag::ItemKey::Label)
-                                .map(|s| s.to_string())
-                                .or_else(|| {
-                                    tag.get_string(&lofty::tag::ItemKey::Publisher)
-                                        .map(|s| s.to_string())
-                                });
-                            desc = tag
-                                .get_string(&lofty::tag::ItemKey::Comment)
-                                .map(|s| s.to_string());
-                            
-                            // Only extract art if we don't already have a themed version in some cache?
-                            // Actually, metadata extraction is per-play now, so we always check.
-                            if let Some(picture) = tag.pictures().first() {
-                                art = Some(picture.data().to_vec());
-                            }
-                        }
-
-                        // Final check before potentially large channel send
-                        if active_req.load(std::sync::atomic::Ordering::SeqCst) != request_id {
-                            return;
-                        }
-
-                        let _ = tx.blocking_send(TrackMetadataUpdate {
-                            idx,
-                            sample_rate: props.sample_rate().unwrap_or(0),
-                            channels: props.channels().unwrap_or(0),
-                            bitrate: props.audio_bitrate().unwrap_or(0),
-                            bit_depth: props.bit_depth().unwrap_or(0),
-                            title,
-                            artist,
-                            album,
-                            genre,
-                            label,
-                            description: desc,
-                            cover_art: art,
-                            duration,
-                        });
-                    }
-                });
+                
+                let _ = self.metadata_worker_tx.try_send((idx, path, request_id));
                 Ok(())
             } else {
                 Err(ChordError::Playback(format!(
@@ -1306,6 +1306,7 @@ mod tests {
 
     fn create_test_app() -> App {
         let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (worker_tx, _) = mpsc::channel(16);
         let (refresh_tx, refresh_rx) = mpsc::channel(2);
         let settings = Arc::new(Settings::new().unwrap());
         let index = Arc::new(LibraryIndex::new(&PathBuf::from("/tmp")));
@@ -1361,6 +1362,7 @@ mod tests {
             index,
             metadata_rx,
             metadata_tx,
+            metadata_worker_tx: worker_tx,
             active_metadata_request: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             refresh_rx,
             refresh_tx,

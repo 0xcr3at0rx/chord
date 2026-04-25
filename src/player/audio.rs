@@ -18,10 +18,10 @@ struct StreamingReader<R: Read> {
 
 impl<R: Read> StreamingReader<R> {
     fn new(mut inner: R) -> Self {
-        let mut header_buffer = Vec::with_capacity(262144); // 256KB buffer for headers
+        let mut header_buffer = Vec::with_capacity(393216); // 384KB buffer for headers
         let mut temp_buf = [0u8; 16384];
-        for _ in 0..16 {
-            // Read up to 256KB in chunks for reliable detection
+        for _ in 0..24 {
+            // Read up to 384KB in chunks for reliable detection
             match inner.read(&mut temp_buf) {
                 Ok(0) => break,
                 Ok(n) => header_buffer.extend_from_slice(&temp_buf[..n]),
@@ -236,7 +236,7 @@ impl AudioPlayer {
         let (tx, rx) = mpsc::channel();
         
         // Use lock-free crossbeam ArrayQueue
-        let sample_queue = Arc::new(ArrayQueue::new(4096));
+        let sample_queue = Arc::new(ArrayQueue::new(8192));
 
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

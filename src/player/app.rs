@@ -132,10 +132,12 @@ pub struct App {
     pub settings: Arc<Settings>,
     pub theme: crate::core::constants::Theme,
     pub index: Arc<LibraryIndex>,
-    pub metadata_rx: mpsc::UnboundedReceiver<TrackMetadataUpdate>,
-    pub metadata_tx: mpsc::UnboundedSender<TrackMetadataUpdate>,
-    pub refresh_rx: mpsc::UnboundedReceiver<RefreshUpdate>,
-    pub refresh_tx: mpsc::UnboundedSender<RefreshUpdate>,
+    pub metadata_rx: mpsc::Receiver<TrackMetadataUpdate>,
+    pub metadata_tx: mpsc::Sender<TrackMetadataUpdate>,
+    pub active_metadata_request: Arc<std::sync::atomic::AtomicU64>,
+    pub refresh_rx: mpsc::Receiver<RefreshUpdate>,
+    pub refresh_tx: mpsc::Sender<RefreshUpdate>,
+    pub is_refreshing: bool,
     pub needs_redraw: bool,
     pub audio_clock: f64,
     pub radio_loaded: bool,
@@ -201,8 +203,8 @@ impl App {
         index: Arc<LibraryIndex>,
     ) -> ChordResult<App> {
         tracing::info!("Creating new App instance");
-        let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (refresh_tx, refresh_rx) = mpsc::channel(2);
 
         let config = settings
             .config
@@ -303,8 +305,10 @@ impl App {
             index,
             metadata_rx,
             metadata_tx,
+            active_metadata_request: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             refresh_rx,
             refresh_tx,
+            is_refreshing: false,
             needs_redraw: false,
             audio_clock: 0.0,
             radio_loaded: false,
@@ -357,6 +361,11 @@ impl App {
 
     #[tracing::instrument(skip(self))]
     pub async fn refresh_library(&mut self) {
+        if self.is_refreshing {
+            tracing::debug!("Library refresh already in progress, skipping");
+            return;
+        }
+
         tracing::info!("Refreshing library (background)");
         let music_dir = match self.settings.config.read() {
             Ok(c) => c.library.music_dir.clone(),
@@ -367,6 +376,7 @@ impl App {
             }
         };
         
+        self.is_refreshing = true;
         let index_clone = Arc::clone(&self.index);
         let tx = self.refresh_tx.clone();
         
@@ -392,7 +402,7 @@ impl App {
             let _ = tx.send(RefreshUpdate {
                 all_tracks: tracks,
                 playlists,
-            });
+            }).await;
         });
     }
 
@@ -542,6 +552,9 @@ impl App {
             self.is_playing = true;
             self.current_track = None; // Reset before setting new one for radio
             
+            // Invalidate any pending metadata requests from previously selected tracks
+            self.active_metadata_request.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            
             self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
                 track_id: "radio".into(),
                 title: name.clone(), // Use cloned name
@@ -680,6 +693,7 @@ impl App {
 
         while let Ok(update) = self.refresh_rx.try_recv() {
             tracing::info!("Applying background library refresh update");
+            self.is_refreshing = false;
             self.all_tracks = Arc::from(update.all_tracks);
             self.playlists = update.playlists;
             
@@ -1000,12 +1014,25 @@ impl App {
                 }
 
                 let tx = self.metadata_tx.clone();
+                let active_req = Arc::clone(&self.active_metadata_request);
+                let request_id = active_req.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
                 tokio::task::spawn_blocking(move || {
+                    // Pre-check: has a new request already started?
+                    if active_req.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                        return;
+                    }
+
                     if let Ok(probed) = lofty::read_from_path(&path) {
                         use lofty::file::AudioFile;
                         use lofty::prelude::*;
                         let props = probed.properties();
                         let duration = props.duration();
+
+                        // Post-read check: user might have skipped while we were reading tags
+                        if active_req.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                            return;
+                        }
 
                         let mut genre = None;
                         let mut label = None;
@@ -1038,7 +1065,12 @@ impl App {
                             }
                         }
 
-                        let _ = tx.send(TrackMetadataUpdate {
+                        // Final check before potentially large channel send
+                        if active_req.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                            return;
+                        }
+
+                        let _ = tx.blocking_send(TrackMetadataUpdate {
                             idx,
                             sample_rate: props.sample_rate().unwrap_or(0),
                             channels: props.channels().unwrap_or(0),
@@ -1273,8 +1305,8 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn create_test_app() -> App {
-        let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (refresh_tx, refresh_rx) = mpsc::channel(2);
         let settings = Arc::new(Settings::new().unwrap());
         let index = Arc::new(LibraryIndex::new(&PathBuf::from("/tmp")));
         
@@ -1329,8 +1361,10 @@ mod tests {
             index,
             metadata_rx,
             metadata_tx,
+            active_metadata_request: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             refresh_rx,
             refresh_tx,
+            is_refreshing: false,
             needs_redraw: false,
             audio_clock: 0.0,
             radio_loaded: false,
@@ -1779,7 +1813,7 @@ mod tests {
         // Simulate refresh where B still exists but at a different index
         let t3 = Arc::new(TrackMetadata { track_id: "3".into(), title: "0".into(), ..TrackMetadata::default() });
         let new_tracks = vec![t3, t1, t2]; // Now B is at index 2
-        app.refresh_tx.send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         
@@ -1797,7 +1831,7 @@ mod tests {
 
         // Simulate refresh where A is gone
         let new_tracks = vec![];
-        app.refresh_tx.send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         
@@ -1812,7 +1846,7 @@ mod tests {
         
         // Refresh with updated title
         let t1_new = Arc::new(TrackMetadata { track_id: "1".into(), title: "New Title".into(), ..TrackMetadata::default() });
-        app.refresh_tx.send(RefreshUpdate { all_tracks: vec![t1_new].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: vec![t1_new].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         
@@ -1884,7 +1918,7 @@ mod tests {
         let mut app = create_test_app();
         app.playing_idx = Some(1);
         
-        app.metadata_tx.send(TrackMetadataUpdate {
+        app.metadata_tx.try_send(TrackMetadataUpdate {
             idx: 2, // Wrong index
             sample_rate: 44100,
             channels: 2,
@@ -1907,7 +1941,7 @@ mod tests {
         app.playing_idx = Some(0);
         app.current_track = Some(app.playback_track_list[0].clone());
 
-        app.metadata_tx.send(TrackMetadataUpdate {
+        app.metadata_tx.try_send(TrackMetadataUpdate {
             idx: 0,
             sample_rate: 44100,
             channels: 2,
@@ -2006,7 +2040,7 @@ mod tests {
         app.all_tracks = Arc::from(vec![t1.clone()]);
         
         let t2 = Arc::new(TrackMetadata { track_id: "2".into(), title: "B".into(), ..TrackMetadata::default() });
-        app.refresh_tx.send(RefreshUpdate { all_tracks: vec![t1, t2].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: vec![t1, t2].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         assert_eq!(app.all_tracks.len(), 2);

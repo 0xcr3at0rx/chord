@@ -16,6 +16,9 @@ pub struct DspState {
     pub waveform: Vec<f32>,
     pub spectrum: Vec<f32>,
     pub amplitude: f32,
+    pub bass: f32,
+    pub mid: f32,
+    pub treble: f32,
     pub is_beat: bool,
 }
 
@@ -25,6 +28,9 @@ impl Default for DspState {
             waveform: vec![0.0; FFT_SIZE],
             spectrum: vec![0.0; FFT_SIZE / 2],
             amplitude: 0.0,
+            bass: 0.0,
+            mid: 0.0,
+            treble: 0.0,
             is_beat: false,
         }
     }
@@ -34,6 +40,7 @@ pub struct AudioAnalyzer {
     fft_processor: Arc<dyn RealToComplex<f32>>,
     window: Vec<f32>,
     pub state: Arc<RwLock<DspState>>,
+    sample_rate: f32,
     
     // Pre-allocated buffers to avoid allocations in the audio path
     fft_input: Vec<f32>,
@@ -41,6 +48,8 @@ pub struct AudioAnalyzer {
 
     // Adaptive Beat Detection
     energy_history: Vec<f32>,
+    energy_idx: usize,
+    energy_sum: f32,
     energy_avg: f32,
 }
 
@@ -61,11 +70,18 @@ impl AudioAnalyzer {
             fft_processor,
             state: Arc::new(RwLock::new(DspState::default())),
             window,
+            sample_rate: 48000.0,
             fft_input: vec![0.0; FFT_SIZE],
             fft_output,
-            energy_history: Vec::with_capacity(43),
+            energy_history: vec![0.0; 64],
+            energy_idx: 0,
+            energy_sum: 0.0,
             energy_avg: 0.0,
         }
+    }
+
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        self.sample_rate = sample_rate as f32;
     }
 
     pub fn process_samples(&mut self, samples: &[f32]) {
@@ -74,6 +90,8 @@ impl AudioAnalyzer {
         }
 
         let current_amplitude;
+        let samples_len_inv = 1.0 / samples.len() as f32;
+
         {
             let mut state = self.state.write().unwrap();
             
@@ -96,9 +114,20 @@ impl AudioAnalyzer {
                 sum += xor_abs(s);
             }
             
-            current_amplitude = sum / samples.len() as f32;
-            // Exponential moving average for smoothness
-            state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2);
+            current_amplitude = sum * samples_len_inv;
+            
+            // Fixed-point EMA: state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2)
+            // Scale by 2^16 (65536) and use i64 for safety
+            // 0.8 * 65536 approx 52429
+            // 0.2 * 65536 approx 13107
+            if current_amplitude.is_finite() {
+                let amp_fixed = (state.amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+                let cur_amp_fixed = (current_amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+                let next_amp_fixed = (amp_fixed * 52429 + cur_amp_fixed * 13107) >> 16;
+                state.amplitude = next_amp_fixed as f32 * 0.0000152587890625; // Multiply by 1/65536
+            } else {
+                state.amplitude = current_amplitude;
+            }
         }
 
         if samples.len() >= FFT_SIZE {
@@ -121,23 +150,63 @@ impl AudioAnalyzer {
                 state.is_beat = is_beat;
                 
                 // Update spectrum in place to avoid allocation
-                for i in 0..FFT_SIZE / 2 {
+                let spec_half_len = FFT_SIZE >> 1; 
+                for i in 0..spec_half_len {
                     let c = self.fft_output[i];
                     state.spectrum[i] = (c.re * c.re + c.im * c.im).sqrt();
+                }
+
+                // Energy band calculation
+                let bin_resolution = self.sample_rate / (FFT_SIZE as f32);
+                let bass_cutoff = (250.0 / bin_resolution) as usize;
+                let mid_cutoff = (4000.0 / bin_resolution) as usize;
+                let spec_len = state.spectrum.len();
+                let bass_end = bass_cutoff.min(spec_len);
+                let mid_end = mid_cutoff.min(spec_len);
+
+                let bass_sum: f32 = state.spectrum[..bass_end].iter().sum();
+                let mid_sum: f32 = state.spectrum[bass_end..mid_end].iter().sum();
+                let treble_sum: f32 = state.spectrum[mid_end..].iter().sum();
+
+                // Fixed-point smoothing for bands
+                if bass_sum.is_finite() && mid_sum.is_finite() && treble_sum.is_finite() {
+                    let bass_fixed = (state.bass.clamp(0.0, 1e6) * 65536.0) as i64;
+                    let cur_bass_fixed = (bass_sum.clamp(0.0, 1e6) * 65536.0) as i64;
+                    state.bass = ((bass_fixed * 52429 + cur_bass_fixed * 13107) >> 16) as f32 * 0.0000152587890625;
+
+                    let mid_fixed = (state.mid.clamp(0.0, 1e6) * 65536.0) as i64;
+                    let cur_mid_fixed = (mid_sum.clamp(0.0, 1e6) * 65536.0) as i64;
+                    state.mid = ((mid_fixed * 52429 + cur_mid_fixed * 13107) >> 16) as f32 * 0.0000152587890625;
+
+                    let treble_fixed = (state.treble.clamp(0.0, 1e6) * 65536.0) as i64;
+                    let cur_treble_fixed = (treble_sum.clamp(0.0, 1e6) * 65536.0) as i64;
+                    state.treble = ((treble_fixed * 52429 + cur_treble_fixed * 13107) >> 16) as f32 * 0.0000152587890625;
+                } else {
+                    state.bass = bass_sum;
+                    state.mid = mid_sum;
+                    state.treble = treble_sum;
                 }
             }
         }
     }
 
     fn detect_beat_adaptive(&mut self, amplitude: f32) -> bool {
-        if self.energy_history.len() >= 43 {
-            self.energy_history.remove(0);
-        }
-        self.energy_history.push(amplitude);
-        self.energy_avg =
-            self.energy_history.iter().sum::<f32>() / self.energy_history.len() as f32;
+        // Use fixed-point for history to avoid precision drift
+        let amp_fixed = (amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+        let old_fixed = (self.energy_history[self.energy_idx] * 65536.0) as i64;
         
-        // Branchless-style comparison (result is bool)
+        let sum_fixed = (self.energy_sum * 65536.0) as i64;
+        let next_sum_fixed = sum_fixed - old_fixed + amp_fixed;
+        
+        self.energy_history[self.energy_idx] = amplitude;
+        self.energy_sum = next_sum_fixed as f32 * 0.0000152587890625;
+        
+        self.energy_idx = (self.energy_idx + 1) & 63;
+        
+        // Fast reciprocal multiply (1/64)
+        self.energy_avg = self.energy_sum * 0.015625;
+        
+        // Branchless-style comparison
         (amplitude > self.energy_avg * 1.6) & (amplitude > 0.05)
     }
 }
@@ -188,7 +257,7 @@ mod tests {
         
         let state = analyzer.state.read().unwrap();
         // Amplitude should be updated (EMA logic: 0.0 * 0.8 + 0.5 * 0.2 = 0.1)
-        assert!((state.amplitude - 0.1).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.1).abs() < 1e-3);
         assert!(!state.is_beat);
         
         // Check waveform copy (only first 100 samples copied)
@@ -205,7 +274,7 @@ mod tests {
         
         let state = analyzer.state.read().unwrap();
         // EMA logic: 0.0 * 0.8 + 1.0 * 0.2 = 0.2
-        assert!((state.amplitude - 0.2).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.2).abs() < 1e-3);
         
         // Check waveform copy
         assert_eq!(state.waveform, samples);
@@ -218,7 +287,7 @@ mod tests {
         analyzer.process_samples(&samples);
         
         let state = analyzer.state.read().unwrap();
-        assert!((state.amplitude - 0.1).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.1).abs() < 1e-3);
         
         // Only first FFT_SIZE elements should be copied into waveform
         assert_eq!(state.waveform, vec![0.5; FFT_SIZE]);
@@ -244,7 +313,7 @@ mod tests {
         let mut analyzer = AudioAnalyzer::new();
         
         // Feed low energy to build history
-        for _ in 0..45 {
+        for _ in 0..65 {
             analyzer.detect_beat_adaptive(0.01);
         }
         
@@ -253,7 +322,7 @@ mod tests {
         assert!(is_beat);
         
         // Check that a sustained high energy does not continuously trigger beats (requires spike > 1.6x avg)
-        for _ in 0..45 {
+        for _ in 0..65 {
             analyzer.detect_beat_adaptive(0.8);
         }
         let is_beat_sustained = analyzer.detect_beat_adaptive(0.8);
@@ -274,7 +343,7 @@ mod tests {
         let state = analyzer.state.read().unwrap();
         // All absolute values are 1.0, so avg is 1.0
         // EMA: 0.0 * 0.8 + 1.0 * 0.2 = 0.2
-        assert!((state.amplitude - 0.2).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.2).abs() < 1e-3);
     }
 
     #[test]
@@ -375,7 +444,7 @@ mod tests {
         for _ in 0..50 {
             analyzer.process_samples(&silence);
             let state = analyzer.state.read().unwrap();
-            assert!(state.amplitude < last_amplitude);
+            assert!(state.amplitude <= last_amplitude);
             last_amplitude = state.amplitude;
         }
         assert!(last_amplitude < 0.001);
@@ -415,7 +484,7 @@ mod tests {
         analyzer.process_samples(&samples);
         let state = analyzer.state.read().unwrap();
         // EMA: 0.0 * 0.8 + 2.0 * 0.2 = 0.4
-        assert!((state.amplitude - 0.4).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.4).abs() < 1e-4);
     }
 
     #[test]
@@ -710,11 +779,11 @@ mod tests {
         analyzer.process_samples(&vec![1.0; FFT_SIZE]);
         let amp1 = analyzer.state.read().unwrap().amplitude;
         // EMA: 0.0 * 0.8 + 1.0 * 0.2 = 0.2
-        assert!((amp1 - 0.2).abs() < f32::EPSILON);
+        assert!((amp1 - 0.2).abs() < 1e-3);
         
         analyzer.process_samples(&vec![1.0; FFT_SIZE]);
         let amp2 = analyzer.state.read().unwrap().amplitude;
         // EMA: 0.2 * 0.8 + 1.0 * 0.2 = 0.16 + 0.2 = 0.36
-        assert!((amp2 - 0.36).abs() < f32::EPSILON);
+        assert!((amp2 - 0.36).abs() < 1e-3);
     }
 }

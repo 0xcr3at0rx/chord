@@ -78,7 +78,9 @@ async fn run_app<B: Backend>(
     loop {
         let now = Instant::now();
         if now.duration_since(last_tick) >= tick_rate {
-            app.update().await;
+            if app.update().await {
+                app.needs_redraw = true;
+            }
             last_tick = now;
         }
 

@@ -193,6 +193,9 @@ enum AudioCmd {
     SetVolume(f32),
     Pause,
     Resume,
+    #[allow(dead_code)]
+    Stop,
+    UpdateSampleRate(u32),
     RegisterRadioSink(Sink, u64),
 }
 
@@ -218,7 +221,7 @@ struct AudioBackend {
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     sample_queue: Arc<ArrayQueue<f32>>,
-    is_null: bool,
+    analyzer: AudioAnalyzer,
 }
 
 impl AudioPlayer {
@@ -244,7 +247,7 @@ impl AudioPlayer {
         let mode = std::sync::Arc::new(std::sync::Mutex::new(if is_null { "NULL".into() } else { "PIPEWIRE".into() }));
         let last_error = std::sync::Arc::new(std::sync::Mutex::new(None));
 
-        let mut analyzer = AudioAnalyzer::new();
+        let analyzer = AudioAnalyzer::new();
         let dsp_state = analyzer.state.clone();
 
         if is_null {
@@ -264,31 +267,6 @@ impl AudioPlayer {
         let backend_init = is_initializing.clone();
         let backend_last_err = last_error.clone();
         let backend_tx = tx.clone();
-        let analyzer_queue = Arc::clone(&sample_queue);
-
-        // Start Analyzer thread
-        std::thread::spawn(move || {
-            let mut samples_buf = Vec::with_capacity(2048);
-            loop {
-                while let Some(sample) = analyzer_queue.pop() {
-                    samples_buf.push(sample);
-                    if samples_buf.len() >= 2048 {
-                        // Sliding window: process current buffer
-                        analyzer.process_samples(&samples_buf);
-
-                        // Increased hop size (1024) to reduce context-switching overhead
-                        let hop = 1024;
-                        if samples_buf.len() > hop {
-                            samples_buf.drain(0..hop);
-                        } else {
-                            samples_buf.clear();
-                        }
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        });
-
         let backend_queue = Arc::clone(&sample_queue);
         let active_request_id_shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let active_request_id_backend = active_request_id_shared.clone();
@@ -306,200 +284,127 @@ impl AudioPlayer {
                 is_initializing_shared: backend_init,
                 last_error_shared: backend_last_err,
                 sample_queue: backend_queue,
-                is_null,
+                analyzer,
             };
 
-            if !is_null {
-                let _ = backend.try_init(false);
-            }
+            let _ = backend.try_init(false);
 
+            let mut samples_buf = Vec::with_capacity(2048);
             loop {
-                let cmd = rx.recv_timeout(Duration::from_millis(50));
-                match cmd {
-                    Ok(AudioCmd::Init) => {
-                        tracing::debug!("AudioCmd::Init received");
-                        if backend.is_null { continue; }
-                        backend
-                            .is_initializing_shared
-                            .store(true, std::sync::atomic::Ordering::Relaxed);
-                        let res = backend.try_init(true);
-
-                        if let Err(e) = &res {
-                            *backend.last_error_shared.lock().unwrap() = Some(e.clone());
-                        } else {
-                            *backend.last_error_shared.lock().unwrap() = None;
+                // 1. Process all pending commands
+                while let Ok(cmd) = rx.try_recv() {
+                    match cmd {
+                        AudioCmd::Init => {
+                            backend.is_initializing_shared.store(true, std::sync::atomic::Ordering::Relaxed);
+                            let res = backend.try_init(true);
+                            if let Err(e) = &res { *backend.last_error_shared.lock().unwrap() = Some(e.clone()); }
+                            else { *backend.last_error_shared.lock().unwrap() = None; }
+                            backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
+                            backend.is_initializing_shared.store(false, std::sync::atomic::Ordering::Relaxed);
                         }
-                        backend
-                            .has_error_shared
-                            .store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
-                        backend
-                            .is_initializing_shared
-                            .store(false, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Ok(AudioCmd::Play(path)) => {
-                        tracing::debug!(path = ?path, "AudioCmd::Play received");
-                        if backend.is_null {
-                            backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
-                            continue;
+                        AudioCmd::Play(path) => {
+                            backend.active_request_id = 0;
+                            let res = backend.play(path);
+                            if let Err(e) = &res { *backend.last_error_shared.lock().unwrap() = Some(e.clone()); }
+                            else { *backend.last_error_shared.lock().unwrap() = None; }
+                            backend.has_error_shared.store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
                         }
-                        backend.active_request_id = 0; // Local playback doesn't need async registration
-                        let res = backend.play(path);
-                        if let Err(e) = &res {
-                            *backend.last_error_shared.lock().unwrap() = Some(e.clone());
-                        } else {
-                            *backend.last_error_shared.lock().unwrap() = None;
-                        }
-                        backend
-                            .has_error_shared
-                            .store(res.is_err(), std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Ok(AudioCmd::PlayStream(url, request_id)) => {
-                        tracing::info!(url = %url, request_id, "AudioCmd::PlayStream received");
-                        backend.stop_sink();
-                        backend.active_request_id = request_id;
-                        backend.active_request_id_shared.store(request_id, std::sync::atomic::Ordering::Relaxed);
+                        AudioCmd::PlayStream(url, request_id) => {
+                            backend.stop_sink();
+                            backend.active_request_id = request_id;
+                            backend.active_request_id_shared.store(request_id, std::sync::atomic::Ordering::Relaxed);
+                            if backend.handle.is_none() { let _ = backend.try_init(false); }
+                            
+                            let tx_clone = backend_tx.clone();
+                            let handle_shared = backend.handle.clone();
+                            let volume = backend.volume;
+                            let last_err_shared = backend.last_error_shared.clone();
+                            let has_err_shared = backend.has_error_shared.clone();
+                            let q_clone = Arc::clone(&backend.sample_queue);
+                            let active_id_shared = backend.active_request_id_shared.clone();
 
-                        if backend.is_null {
-                            backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
-                            continue;
-                        }
+                            std::thread::spawn(move || {
+                                if let Some(handle) = handle_shared {
+                                    let mut retry_count = 0;
+                                    while retry_count < 3 {
+                                        if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id { return; }
+                                        let res = (|| -> Result<Sink, String> {
+                                            let response = reqwest::blocking::Client::builder()
+                                                .user_agent("Chord/1.2")
+                                                .timeout(Duration::from_secs(15))
+                                                .build().map_err(|e| e.to_string())?
+                                                .get(&url).send().map_err(|e| e.to_string())?;
+                                            if !response.status().is_success() { return Err(format!("HTTP {}", response.status())); }
+                                            if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id { return Err("Canceled".into()); }
+                                            let reader = StreamingReader::new(response);
+                                            let source = Decoder::new(reader).map_err(|e| e.to_string())?;
+                                            
+                                            // Send sample rate update
+                                            use rodio::Source;
+                                            let _ = tx_clone.send(AudioCmd::UpdateSampleRate(source.sample_rate()));
 
-                        // Ensure we have a handle before spawning radio thread
-                        if backend.handle.is_none() {
-                            let _ = backend.try_init(false);
-                        }
-
-                        let tx_clone = backend_tx.clone();
-                        let handle_shared = backend.handle.clone();
-                        let volume = backend.volume;
-                        let last_error_shared = backend.last_error_shared.clone();
-                        let has_error_shared = backend.has_error_shared.clone();
-                        let queue_clone = Arc::clone(&backend.sample_queue);
-                        let active_id_shared = backend.active_request_id_shared.clone();
-
-                        std::thread::spawn(move || {
-                            if let Some(handle) = handle_shared {
-                                let mut retry_count = 0;
-                                let max_retries = 3;
-
-                                while retry_count < max_retries {
-                                    // Check if we're still the active request
-                                    if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id {
-                                        tracing::debug!(request_id, "Radio thread cancelling: stale request");
-                                        return;
-                                    }
-
-                                    let res = (|| -> Result<Sink, String> {
-                                        let response = reqwest::blocking::Client::builder()
-                                            .user_agent(
-                                                "Chord/1.2 (https://github.com/0xcr3at0rx/chord)",
-                                            )
-                                            .timeout(Duration::from_secs(15))
-                                            .connect_timeout(Duration::from_secs(10))
-                                            .redirect(reqwest::redirect::Policy::limited(10))
-                                            .build()
-                                            .map_err(|e| format!("Client: {}", e))?
-                                            .get(&url)
-                                            .header("Icy-MetaData", "0")
-                                            .header("Connection", "keep-alive")
-                                            .send()
-                                            .map_err(|e| format!("Request: {}", e))?;
-
-                                        if !response.status().is_success() {
-                                            return Err(format!("HTTP {}", response.status()));
-                                        }
-
-                                        // Final check before heavy decoder/sink allocation
-                                        if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id {
-                                            return Err("Canceled".into());
-                                        }
-
-                                        let reader = StreamingReader::new(response);
-                                        let source = Decoder::new(reader)
-                                            .map_err(|e| format!("Decoder: {}", e))?;
-                                        let source = rodio::Source::convert_samples::<f32>(source);
-                                        let source = VisualizerTracker {
-                                            inner: source,
-                                            sample_queue: queue_clone.clone(),
-                                            sample_counter: 0,
-                                        };
-                                        let sink = Sink::try_new(&handle)
-                                            .map_err(|e| format!("Sink: {}", e))?;
-                                        sink.set_volume(volume);
-                                        sink.append(source);
-                                        sink.play();
-                                        Ok(sink)
-                                    })();
-
-                                    match res {
-                                        Ok(sink) => {
-                                            let _ = tx_clone.send(AudioCmd::RegisterRadioSink(
-                                                sink, request_id,
-                                            ));
-                                            return;
-                                        }
-                                        Err(e) if e == "Canceled" => return,
-                                        Err(e) => {
-                                            retry_count += 1;
-                                            if retry_count >= max_retries {
-                                                *last_error_shared.lock().unwrap() = Some(format!(
-                                                    "Connection failed after {} attempts: {}",
-                                                    max_retries, e
-                                                ));
-                                                has_error_shared.store(
-                                                    true,
-                                                    std::sync::atomic::Ordering::Relaxed,
-                                                );
-                                            } else {
-                                                std::thread::sleep(Duration::from_millis(
-                                                    500 * retry_count,
-                                                ));
+                                            let source = rodio::Source::convert_samples::<f32>(source);
+                                            let source = VisualizerTracker { inner: source, sample_queue: q_clone.clone(), sample_counter: 0 };
+                                            let sink = Sink::try_new(&handle).map_err(|e| e.to_string())?;
+                                            sink.set_volume(volume);
+                                            sink.append(source);
+                                            sink.play();
+                                            Ok(sink)
+                                        })();
+                                        match res {
+                                            Ok(sink) => { let _ = tx_clone.send(AudioCmd::RegisterRadioSink(sink, request_id)); return; }
+                                            Err(e) if e == "Canceled" => return,
+                                            Err(e) => {
+                                                retry_count += 1;
+                                                if retry_count >= 3 {
+                                                    *last_err_shared.lock().unwrap() = Some(e);
+                                                    has_err_shared.store(true, std::sync::atomic::Ordering::Relaxed);
+                                                } else { std::thread::sleep(Duration::from_millis(500 * retry_count)); }
                                             }
                                         }
                                     }
                                 }
+                            });
+                        }
+                        AudioCmd::RegisterRadioSink(sink, request_id) => {
+                            if request_id == backend.active_request_id {
+                                backend.sink = Some(sink);
+                                backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
                             }
-                        });
-                    }
-                    Ok(AudioCmd::RegisterRadioSink(sink, request_id)) => {
-                        tracing::debug!(request_id, "AudioCmd::RegisterRadioSink received");
-                        if request_id == backend.active_request_id {
-                            backend.sink = Some(sink);
-                            backend
-                                .is_empty_shared
-                                .store(false, std::sync::atomic::Ordering::Relaxed);
-                        } else {
-                            sink.stop();
                         }
-                    }
-                    Ok(AudioCmd::SetVolume(v)) => {
-                        tracing::debug!(volume = v, "AudioCmd::SetVolume received");
-                        backend.volume = v;
-                        if let Some(s) = &backend.sink {
-                            s.set_volume(v);
+                        AudioCmd::UpdateSampleRate(sr) => {
+                            backend.analyzer.set_sample_rate(sr);
                         }
-                    }
-                    Ok(AudioCmd::Pause) => {
-                        tracing::info!("AudioCmd::Pause received");
-                        if let Some(s) = &backend.sink {
-                            s.pause();
+                        AudioCmd::SetVolume(v) => {
+                            backend.volume = v;
+                            if let Some(s) = &backend.sink { s.set_volume(v); }
                         }
+                        AudioCmd::Pause => { if let Some(s) = &backend.sink { s.pause(); } }
+                        AudioCmd::Resume => { if let Some(s) = &backend.sink { s.play(); } }
+                        AudioCmd::Stop => { backend.stop_all(); }
                     }
-                    Ok(AudioCmd::Resume) => {
-                        tracing::info!("AudioCmd::Resume received");
-                        if let Some(s) = &backend.sink {
-                            s.play();
-                        }
-                    }
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
                 }
 
-                if !backend.is_null {
-                    backend.is_empty_shared.store(
-                        backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true),
-                        std::sync::atomic::Ordering::Relaxed,
-                    );
+                // 2. Process all pending samples for visualization
+                let mut processed = false;
+                while let Some(sample) = backend.sample_queue.pop() {
+                    samples_buf.push(sample);
+                    if samples_buf.len() >= 2048 {
+                        backend.analyzer.process_samples(&samples_buf);
+                        samples_buf.drain(0..1024);
+                        processed = true;
+                    }
+                }
+
+                // Update is_empty flag
+                backend.is_empty_shared.store(
+                    backend.sink.as_ref().map(|s| s.empty()).unwrap_or(true),
+                    std::sync::atomic::Ordering::Relaxed,
+                );
+
+                // Small sleep if we didn't do much to avoid 100% CPU
+                if !processed {
+                    std::thread::sleep(Duration::from_millis(5));
                 }
             }
         });
@@ -553,6 +458,11 @@ impl AudioPlayer {
         let _ = self.cmd_tx.send(AudioCmd::Resume);
     }
 
+    #[allow(dead_code)]
+    pub fn stop(&self) {
+        let _ = self.cmd_tx.send(AudioCmd::Stop);
+    }
+
     pub fn is_empty(&self) -> bool {
         self.is_empty.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -561,6 +471,7 @@ impl AudioPlayer {
         self.has_error.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
     pub fn get_amplitude(&self) -> f32 {
         self.dsp_state.read().unwrap().amplitude
     }
@@ -656,6 +567,11 @@ impl AudioBackend {
                 e.to_string()
             })?;
             let source = rodio::Source::convert_samples::<f32>(source);
+            
+            // Update analyzer with track's sample rate
+            use rodio::Source;
+            self.analyzer.set_sample_rate(source.sample_rate());
+
             let source = VisualizerTracker {
                 inner: source,
                 sample_queue: self.sample_queue.clone(),

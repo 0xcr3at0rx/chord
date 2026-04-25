@@ -697,71 +697,69 @@ impl App {
     }
 
     #[tracing::instrument(skip(self))]
-    pub async fn update(&mut self) {
+    pub async fn update(&mut self) -> bool {
+        let mut changed = false;
+        
+        // 1. Kinetic physics and energy bands
         if self.is_playing && (self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online) {
-            let amp = self.audio.get_amplitude();
+            let dsp = self.audio.dsp_state.read().unwrap();
+            let amp = dsp.amplitude;
 
             // Audio-Kinematics
             let d_amp = (amp - self.visual_state.last_amplitude) as f64;
             self.visual_state.acceleration = d_amp * 2.0;
             self.visual_state.velocity =
                 (self.visual_state.velocity * 0.9) + (self.visual_state.acceleration * 0.1);
-            self.visual_state.position += self.visual_state.velocity;
+            
+            if self.visual_state.velocity.abs() > 0.0001 {
+                self.visual_state.position += self.visual_state.velocity;
+                changed |= true;
+            }
 
-            // Angular kinematics based on spectrum/amplitude
-            {
-                let dsp = self.audio.dsp_state.read().unwrap();
-                let spectrum_sum: f32 = dsp.spectrum.iter().sum();
-                self.visual_state.angular_acceleration =
-                    (spectrum_sum as f64 * 0.001) - (self.visual_state.angular_velocity * 0.05);
-                self.visual_state.angular_velocity += self.visual_state.angular_acceleration;
+            // Angular kinematics
+            let spectrum_sum: f32 = dsp.spectrum.iter().take(20).sum();
+            self.visual_state.angular_acceleration =
+                (spectrum_sum as f64 * 0.001) - (self.visual_state.angular_velocity * 0.05);
+            self.visual_state.angular_velocity += self.visual_state.angular_acceleration;
+            
+            if self.visual_state.angular_velocity.abs() > 0.0001 {
                 self.visual_state.rotation += self.visual_state.angular_velocity;
+                changed |= true;
+            }
 
-                // Calculate energy bands
-                let sample_rate = if self.sample_rate > 0 {
-                    self.sample_rate as f32
-                } else {
-                    48000.0
-                };
-                let fft_size = (dsp.spectrum.len() * 2) as f32;
-                let bin_resolution = sample_rate / fft_size;
+            // Use pre-calculated energy bands from AudioAnalyzer
+            self.visual_state.bass = dsp.bass as f64;
+            self.visual_state.mid = dsp.mid as f64;
+            self.visual_state.treble = dsp.treble as f64;
 
-                let bass_cutoff = (250.0 / bin_resolution) as usize;
-                let mid_cutoff = (4000.0 / bin_resolution) as usize;
-                
-                let bass_end = bass_cutoff.min(dsp.spectrum.len());
-                let mid_end = mid_cutoff.min(dsp.spectrum.len());
+            // Update beat flash
+            if dsp.is_beat {
+                self.visual_state.beat_flash = 1.0;
+                changed |= true;
+            } else if self.visual_state.beat_flash > 0.001 {
+                self.visual_state.beat_flash = (self.visual_state.beat_flash - 0.05).max(0.0);
+                changed |= true;
+            }
 
-                let bass_sum: f32 = dsp.spectrum[..bass_end].iter().sum();
-                let mid_sum: f32 = dsp.spectrum[bass_end..mid_end].iter().sum();
-                let treble_sum: f32 = dsp.spectrum[mid_end..].iter().sum();
-
-                // Smooth energy
-                self.visual_state.bass = self.visual_state.bass * 0.8 + (bass_sum as f64) * 0.2;
-                self.visual_state.mid = self.visual_state.mid * 0.8 + (mid_sum as f64) * 0.2;
-                self.visual_state.treble =
-                    self.visual_state.treble * 0.8 + (treble_sum as f64) * 0.2;
-
-                // Update beat flash
-                if dsp.is_beat {
-                    self.visual_state.beat_flash = 1.0;
-                } else {
-                    self.visual_state.beat_flash = (self.visual_state.beat_flash - 0.05).max(0.0);
-                }
-
-                // Camera zoom reacts to bass
-                let target_zoom = 1.0 + (self.visual_state.bass * 0.05).min(0.5);
-                self.visual_state.camera_zoom =
-                    self.visual_state.camera_zoom * 0.9 + target_zoom * 0.1;
+            // Camera zoom reacts to bass
+            let target_zoom = 1.0 + (self.visual_state.bass * 0.05).min(0.5);
+            let old_zoom = self.visual_state.camera_zoom;
+            self.visual_state.camera_zoom =
+                self.visual_state.camera_zoom * 0.9 + target_zoom * 0.1;
+            if (self.visual_state.camera_zoom - old_zoom).abs() > 0.001 {
+                changed |= true;
             }
 
             self.visual_state.last_amplitude = amp;
 
             let speed = 0.005 + (amp as f64 * 0.15) + (self.visual_state.treble * 0.01);
             self.audio_clock += speed;
+            changed |= true;
         }
 
+        // 2. Library Refresh Updates
         while let Ok(update) = self.refresh_rx.try_recv() {
+            changed |= true;
             tracing::info!("Applying background library refresh update");
             self.is_refreshing = false;
             self.all_tracks = Arc::from(update.all_tracks);
@@ -775,18 +773,17 @@ impl App {
                 self.select_playlist(Some(p)).await;
             }
 
-            // Update current_track with new metadata if it exists
             if let Some(current) = &self.current_track {
                 if let Some(updated) = self.all_tracks.iter().find(|t| t.track_id == current.track_id) {
                     self.current_track = Some(Arc::clone(updated));
                 }
             }
-
             self.filter_tracks();
-            self.needs_redraw = true;
         }
 
+        // 3. Metadata Updates
         while let Ok(update) = self.metadata_rx.try_recv() {
+            changed |= true;
             tracing::debug!(idx = update.idx, "Received metadata update for track");
             if self.playing_idx == Some(update.idx) {
                 self.sample_rate = update.sample_rate;
@@ -799,7 +796,6 @@ impl App {
                 self.current_cover_art = update.cover_art;
                 self.current_track_duration = update.duration;
 
-                // Update the Arc<TrackMetadata> in the list if it was unverified
                 if let Some(track) = self.playback_track_list.get(update.idx) {
                     if track.status.as_deref() == Some("unverified") {
                         let mut new_track = (**track).clone();
@@ -811,25 +807,18 @@ impl App {
                         
                         let arc_track = Arc::new(new_track);
                         self.current_track = Some(Arc::clone(&arc_track));
-                        
-                        // We would ideally update the whole library here, 
-                        // but for now we update the active playback list to reflect names immediately
-                        // The next full scan will pick up the updated cache if we were to save it.
                     }
                 }
 
                 if let Some(track) = &self.current_track {
                     let cache_key = format!("{}_{:?}", track.track_id, self.theme.accent);
-
                     if let Some(img) = self.image_cache.get(&cache_key) {
                         self.cached_image = Some(Arc::clone(img));
                         self.image_state = None;
                     } else if let Some(art) = &self.current_cover_art {
                         if let Ok(img) = image::load_from_memory(art) {
-                            // Apply theme filter directly here and cache the themed version
                             let mut rgb_img = img.to_rgb8();
                             let (tr, tg, tb) = crate::core::constants::color_to_rgb(self.theme.accent);
-
                             for pixel in rgb_img.pixels_mut() {
                                 let image::Rgb([r, g, b]) = *pixel;
                                 let nr = (r as f32 * (tr as f32 / 255.0)) as u8;
@@ -837,115 +826,87 @@ impl App {
                                 let nb = (b as f32 * (tb as f32 / 255.0)) as u8;
                                 *pixel = image::Rgb([nr, ng, nb]);
                             }
-
                             let themed = Arc::new(image::DynamicImage::ImageRgb8(rgb_img));
                             self.image_cache.insert(cache_key.clone(), Arc::clone(&themed));
                             self.cached_image = Some(themed);
                             self.image_state = None;
                         }
-                        // Clear raw bytes after decoding to save RAM
                         self.current_cover_art = None;
                     }
                 }
-
-                self.clean_image_cache();
-
-                self.needs_redraw = true;
             }
         }
 
+        // 4. Playback progress and auto-next
         let is_empty = self.audio.is_empty();
         let has_error = self.audio.has_error();
         let is_init = self.audio.is_initializing();
 
         if !is_empty && self.is_starting {
             self.is_starting = false;
+            changed |= true;
         }
 
         if self.is_playing && !is_empty {
             if let Some(start) = self.playback_start {
-                self.current_pos = self.accumulated_pos + start.elapsed();
+                let new_pos = self.accumulated_pos + start.elapsed();
+                if new_pos.as_secs() != self.current_pos.as_secs() { changed |= true; }
+                self.current_pos = new_pos;
             }
             if self.current_track_duration.as_secs_f64() > 0.0 {
-                self.progress = (self.current_pos.as_secs_f64()
-                    / self.current_track_duration.as_secs_f64())
-                    as f32;
-                self.progress = self.progress.clamp(0.0, 1.0);
+                let new_prog = (self.current_pos.as_secs_f64() / self.current_track_duration.as_secs_f64()) as f32;
+                let new_prog = new_prog.clamp(0.0, 1.0);
+                if (new_prog - self.progress).abs() > 0.01 { changed |= true; }
+                self.progress = new_prog;
             }
             if !self.lyrics.is_empty() {
                 let mut idx = 0;
                 for (i, l) in self.lyrics.iter().enumerate() {
-                    if l.time <= self.current_pos {
-                        idx = i;
-                    } else {
-                        break;
-                    }
+                    if l.time <= self.current_pos { idx = i; } else { break; }
                 }
-                self.current_lyric_idx = idx;
-                if self.auto_scroll {
-                    self.lyrics_scroll = self.current_lyric_idx.saturating_sub(5) as u16;
+                if self.current_lyric_idx != idx {
+                    self.current_lyric_idx = idx;
+                    if self.auto_scroll { self.lyrics_scroll = self.current_lyric_idx.saturating_sub(5) as u16; }
+                    changed |= true;
                 }
             }
 
             if self.progress >= 0.999 && !self.playback_track_list.is_empty() && !is_init {
-                let is_radio = self
-                    .current_track
-                    .as_ref()
-                    .map(|t| t.status.as_deref() == Some("radio"))
-                    .unwrap_or(false);
+                let is_radio = self.current_track.as_ref().map(|t| t.status.as_deref() == Some("radio")).unwrap_or(false);
                 if !is_radio {
-                    let next = self
-                        .playing_idx
-                        .map(|i| (i + 1) % self.playback_track_list.len())
-                        .unwrap_or(0);
+                    self.clean_image_cache();
+                    let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
                     if let Some(track) = self.playback_track_list.get(next) {
-                        let track = track.clone();
-                        let _ = self.play_track_at(track, next, false);
+                        let _ = self.play_track_at(track.clone(), next, false);
+                        changed |= true;
                     }
                 }
             }
-        } else if self.is_playing
-            && is_empty
-            && !is_init
-            && !self.is_starting
-            && !self.playback_track_list.is_empty()
-        {
-            let is_radio = self
-                .current_track
-                .as_ref()
-                .map(|t| t.status.as_deref() == Some("radio"))
-                .unwrap_or(false);
+        } else if self.is_playing && is_empty && !is_init && !self.is_starting && !self.playback_track_list.is_empty() {
+            let is_radio = self.current_track.as_ref().map(|t| t.status.as_deref() == Some("radio")).unwrap_or(false);
             if !is_radio {
-                let next = self
-                    .playing_idx
-                    .map(|i| (i + 1) % self.playback_track_list.len())
-                    .unwrap_or(0);
+                let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
                 if let Some(track) = self.playback_track_list.get(next) {
-                    let track = track.clone();
                     if has_error {
                         let detail = self.audio.last_error.lock().unwrap().clone();
-                        self.last_error = Some(format!(
-                            "SKIPPING BROKEN TRACK: {}",
-                            detail.unwrap_or_default()
-                        ));
+                        self.last_error = Some(format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default()));
                     }
-                    let _ = self.play_track_at(track, next, false);
+                    let _ = self.play_track_at(track.clone(), next, false);
+                    changed |= true;
                 }
             } else if has_error {
-                // For radio, try to reconnect by re-triggering play_radio if it was a real error
                 if let Some(track) = &self.current_track {
-                    if let Some(idx) = self
-                        .filtered_stations
-                        .iter()
-                        .position(|s| s.name == track.title)
-                    {
+                    if let Some(idx) = self.filtered_stations.iter().position(|s| s.name == track.title) {
                         self.play_radio(idx);
+                        changed |= true;
                     }
                 }
             }
         }
 
-        self.needs_redraw = true;
+        let final_changed = changed || self.needs_redraw;
+        self.needs_redraw = false;
+        final_changed
     }
 
     pub fn next(&mut self) {

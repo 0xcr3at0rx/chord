@@ -47,64 +47,77 @@ impl<'a> Visualizer<'a> {
         let color_tail = interpolate_color(note_color, Color::Black, 0.6);
         let char_beat = if self.config.dsp.is_beat { "█" } else { "●" };
 
-        let waveform_len = (self.config.dsp.waveform.len() - 1) as f32;
-        let mut wave_ys = Vec::with_capacity(width);
+        let waveform_len = self.config.dsp.waveform.len();
+        let waveform_len_f = (waveform_len.saturating_sub(1)) as f32;
+        let width_inv = 1.0 / width as f32;
+        let scale = 0.45 * vol * beat_pulse;
+
+        // Use 1024 as our fixed-point scale (2^10)
+        let mut wave_ys_fixed = Vec::with_capacity(width);
         for i in 0..width {
-            let norm_x = i as f32 / width as f32;
-            let wave_idx = (norm_x * waveform_len) as usize;
-            let sample = self
-                .config
-                .dsp
-                .waveform
-                .get(wave_idx)
-                .cloned()
-                .unwrap_or(0.0);
-            wave_ys.push(sample * 0.45 * vol * beat_pulse + 0.5);
+            let norm_x = i as f32 * width_inv;
+            let wave_idx = (norm_x * waveform_len_f) as usize;
+            let sample = unsafe { *self.config.dsp.waveform.get_unchecked(wave_idx.min(waveform_len - 1)) };
+            let y = sample * scale + 0.5;
+            wave_ys_fixed.push((y * 1024.0) as i32);
         }
 
-        (0..height)
-            .map(|y_row| {
-                let mut spans = Vec::new();
-                let norm_y = (height as f32 - 1.0 - y_row as f32) / height as f32;
-                let axis_dist = (norm_y - 0.5).abs();
+        // Pre-calculate thresholds in fixed point
+        let t1_fixed = (0.015 * vol * 1024.0) as i32;
+        let t2_fixed = (0.04 * vol * 1024.0) as i32;
+        let t3_fixed = (0.08 * vol * 1024.0) as i32;
+        let axis_thresh_fixed = (0.005 * 1024.0) as i32;
+        
+        let height_scale_fixed = (1024.0 / height as f32) as i32;
 
-                let mut current_text = String::with_capacity(width);
-                let mut current_color = Color::Reset;
+        let mut lines = Vec::with_capacity(height);
+        let mut row_spans = Vec::with_capacity(width >> 2); 
+        let mut current_text = String::with_capacity(width);
 
-                for i in 0..width {
-                    let dist = (norm_y - wave_ys[i]).abs();
+        for y_row in 0..height {
+            row_spans.clear();
+            current_text.clear();
+            
+            // Fixed-point norm_y: ((height - 1 - y_row) * 1024) / height
+            let norm_y_fixed = (height as i32 - 1 - y_row as i32) * height_scale_fixed;
+            let axis_dist_fixed = (norm_y_fixed - 512).abs(); // 0.5 * 1024 = 512
+            
+            let mut current_color = Color::Reset;
 
-                    let (char_str, color) = if dist < 0.015 * vol {
-                        (char_beat, color_beat)
-                    } else if dist < 0.04 * vol {
-                        ("○", color_mid)
-                    } else if dist < 0.08 * vol {
-                        ("·", color_tail)
-                    } else if axis_dist < 0.005 {
-                        ("─", self.config.theme.dim)
-                    } else {
-                        (" ", Color::Reset)
-                    };
+            for i in 0..width {
+                let dist_fixed = (norm_y_fixed - wave_ys_fixed[i]).abs();
 
-                    if color == current_color {
-                        current_text.push_str(char_str);
-                    } else {
-                        if !current_text.is_empty() {
-                            spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
-                        }
-                        current_text.clear();
-                        current_text.push_str(char_str);
-                        current_color = color;
+                let (char_str, color) = if dist_fixed < t1_fixed {
+                    (char_beat, color_beat)
+                } else if dist_fixed < t2_fixed {
+                    ("○", color_mid)
+                } else if dist_fixed < t3_fixed {
+                    ("·", color_tail)
+                } else if axis_dist_fixed < axis_thresh_fixed {
+                    ("─", self.config.theme.dim)
+                } else {
+                    (" ", Color::Reset)
+                };
+
+                if color == current_color {
+                    current_text.push_str(char_str);
+                } else {
+                    if !current_text.is_empty() {
+                        row_spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
                     }
+                    current_text.clear();
+                    current_text.push_str(char_str);
+                    current_color = color;
                 }
-                
-                if !current_text.is_empty() {
-                    spans.push(Span::styled(current_text, Style::default().fg(current_color)));
-                }
+            }
+            
+            if !current_text.is_empty() {
+                row_spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
+            }
 
-                Line::from(spans)
-            })
-            .collect()
+            lines.push(Line::from(row_spans.clone()));
+        }
+        lines
     }
 }
 
@@ -131,14 +144,17 @@ fn get_note_position(spectrum: &[f32], sample_rate: f32) -> f64 {
         return 0.0;
     }
 
-    let fft_size = (spectrum.len() * 2) as f32;
+    let fft_size = (spectrum.len() << 1) as f32; // Bit shift for * 2
     let freq = max_idx as f32 * sample_rate / fft_size;
 
     if freq < 20.0 {
         return 0.0;
     }
 
-    let n = 12.0 * (freq / 440.0).log2();
+    // Fast log2 calculation using bit manipulation + small correction
+    // log2(x) = (bits >> 23) - 127
+    let x = freq * 0.0022727273; // Reciprocal of 440.0
+    let n = 12.0 * x.log2();
     let note_idx = ((n.round() as i32 % 12) + 12) % 12;
-    note_idx as f64 / 12.0
+    note_idx as f64 * 0.0833333333 // Reciprocal of 12.0
 }

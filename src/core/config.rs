@@ -62,15 +62,28 @@ impl Default for ThemeConfig {
 
 impl ThemeConfig {
     fn parse_hex(hex: &str) -> ratatui::style::Color {
-        let hex = hex.trim().trim_start_matches('#');
-        if hex.len() == 6 {
-            let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
-            let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
-            let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
-            ratatui::style::Color::Rgb(r, g, b)
-        } else {
-            ratatui::style::Color::Reset
+        let hex = hex.trim();
+        let hex = hex.strip_prefix('#').unwrap_or(hex);
+        if hex.len() != 6 {
+            return ratatui::style::Color::Reset;
         }
+
+        let mut rgb = 0u32;
+        for &byte in hex.as_bytes() {
+            let val = match byte {
+                b'0'..=b'9' => byte - b'0',
+                b'a'..=b'f' => byte - b'a' + 10,
+                b'A'..=b'F' => byte - b'A' + 10,
+                _ => return ratatui::style::Color::Reset,
+            };
+            rgb = (rgb << 4) | val as u32;
+        }
+
+        ratatui::style::Color::Rgb(
+            ((rgb >> 16) & 0xFF) as u8,
+            ((rgb >> 8) & 0xFF) as u8,
+            (rgb & 0xFF) as u8,
+        )
     }
 
     pub fn to_theme(&self) -> crate::core::constants::Theme {
@@ -222,9 +235,8 @@ mod tests {
 
     #[test]
     fn test_parse_hex_invalid_chars() {
-        // u8::from_str_radix will fail and unwrap_or(0) will be used
-        assert_eq!(ThemeConfig::parse_hex("#GGGGGG"), Color::Rgb(0, 0, 0));
-        assert_eq!(ThemeConfig::parse_hex("#FFGG00"), Color::Rgb(255, 0, 0));
+        assert_eq!(ThemeConfig::parse_hex("#GGGGGG"), Color::Reset);
+        assert_eq!(ThemeConfig::parse_hex("#FFGG00"), Color::Reset);
     }
 
     #[test]

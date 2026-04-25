@@ -70,7 +70,8 @@ pub fn interpolate_color(c1: Color, c2: Color, t: f64) -> Color {
     let (r1, g1, b1) = color_to_rgb(c1);
     let (r2, g2, b2) = color_to_rgb(c2);
     
-    // Convert t [0.0, 1.0] to fixed point 8.8 (0 to 256)
+    // Convert t [0.0, 1.0] to fixed point 8.8 (0 to 256) using bit shifts where possible
+    // (t * 256.0) is already quite fast, but let's ensure we use shift for division
     let t_fixed = (t.clamp(0.0, 1.0) * 256.0) as i32;
     let t_inv = 256 - t_fixed;
 

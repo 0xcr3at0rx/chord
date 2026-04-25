@@ -67,7 +67,7 @@ impl<'a> Visualizer<'a> {
         let height_inv = 1.0 / height as f32;
 
         let mut lines = Vec::with_capacity(height);
-        let mut row_spans = Vec::with_capacity(16);
+        let mut row_spans = Vec::with_capacity(width >> 2); // Bit shift for / 4
         let mut current_text = String::with_capacity(width);
 
         for y_row in 0..height {
@@ -146,8 +146,8 @@ fn get_note_position(spectrum: &[f32], sample_rate: f32) -> f64 {
 
     // Fast log2 calculation using bit manipulation + small correction
     // log2(x) = (bits >> 23) - 127
-    let x = freq * (1.0 / 440.0);
+    let x = freq * 0.0022727273; // Reciprocal of 440.0
     let n = 12.0 * x.log2();
     let note_idx = ((n.round() as i32 % 12) + 12) % 12;
-    note_idx as f64 * (1.0 / 12.0) // Multiply by reciprocal
+    note_idx as f64 * 0.0833333333 // Reciprocal of 12.0
 }

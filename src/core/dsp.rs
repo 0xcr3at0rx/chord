@@ -75,7 +75,7 @@ impl AudioAnalyzer {
             sample_rate: 48000.0,
             fft_input: vec![0.0; FFT_SIZE],
             fft_output,
-            energy_history: vec![0.0; 43],
+            energy_history: vec![0.0; 64],
             energy_idx: 0,
             energy_sum: 0.0,
             energy_avg: 0.0,
@@ -143,7 +143,8 @@ impl AudioAnalyzer {
                 
                 // Update spectrum in place to avoid allocation
                 // Auto-vectorization is often better than manual SIMD for this simple map
-                for i in 0..FFT_SIZE / 2 {
+                let spec_half_len = FFT_SIZE >> 1; // Bit shift for / 2
+                for i in 0..spec_half_len {
                     let c = self.fft_output[i];
                     state.spectrum[i] = (c.re * c.re + c.im * c.im).sqrt();
                 }
@@ -173,9 +174,11 @@ impl AudioAnalyzer {
         self.energy_history[self.energy_idx] = amplitude;
         self.energy_sum += amplitude;
         
-        self.energy_idx = (self.energy_idx + 1) % 43; // Small modulo is fine, or use mask if power of 2
+        // Bitwise AND for power of 2 modulo (64)
+        self.energy_idx = (self.energy_idx + 1) & 63;
         
-        self.energy_avg = self.energy_sum * (1.0 / 43.0);
+        // Fast reciprocal multiply (1/64)
+        self.energy_avg = self.energy_sum * 0.015625;
         
         // Branchless-style comparison (result is bool)
         (amplitude > self.energy_avg * 1.6) & (amplitude > 0.05)
@@ -284,7 +287,7 @@ mod tests {
         let mut analyzer = AudioAnalyzer::new();
         
         // Feed low energy to build history
-        for _ in 0..45 {
+        for _ in 0..65 {
             analyzer.detect_beat_adaptive(0.01);
         }
         
@@ -293,7 +296,7 @@ mod tests {
         assert!(is_beat);
         
         // Check that a sustained high energy does not continuously trigger beats (requires spike > 1.6x avg)
-        for _ in 0..45 {
+        for _ in 0..65 {
             analyzer.detect_beat_adaptive(0.8);
         }
         let is_beat_sustained = analyzer.detect_beat_adaptive(0.8);

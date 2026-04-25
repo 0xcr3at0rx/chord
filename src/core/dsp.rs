@@ -15,7 +15,6 @@ fn xor_abs(f: f32) -> f32 {
 pub struct DspState {
     pub waveform: Vec<f32>,
     pub spectrum: Vec<f32>,
-    pub wave_ys: Vec<f32>,
     pub amplitude: f32,
     pub bass: f32,
     pub mid: f32,
@@ -28,7 +27,6 @@ impl Default for DspState {
         Self {
             waveform: vec![0.0; FFT_SIZE],
             spectrum: vec![0.0; FFT_SIZE / 2],
-            wave_ys: Vec::new(),
             amplitude: 0.0,
             bass: 0.0,
             mid: 0.0,

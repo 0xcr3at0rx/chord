@@ -713,7 +713,7 @@ impl App {
             
             if self.visual_state.velocity.abs() > 0.0001 {
                 self.visual_state.position += self.visual_state.velocity;
-                changed = true;
+                changed |= true;
             }
 
             // Angular kinematics
@@ -724,7 +724,7 @@ impl App {
             
             if self.visual_state.angular_velocity.abs() > 0.0001 {
                 self.visual_state.rotation += self.visual_state.angular_velocity;
-                changed = true;
+                changed |= true;
             }
 
             // Use pre-calculated energy bands from AudioAnalyzer
@@ -735,10 +735,10 @@ impl App {
             // Update beat flash
             if dsp.is_beat {
                 self.visual_state.beat_flash = 1.0;
-                changed = true;
+                changed |= true;
             } else if self.visual_state.beat_flash > 0.001 {
                 self.visual_state.beat_flash = (self.visual_state.beat_flash - 0.05).max(0.0);
-                changed = true;
+                changed |= true;
             }
 
             // Camera zoom reacts to bass
@@ -747,19 +747,19 @@ impl App {
             self.visual_state.camera_zoom =
                 self.visual_state.camera_zoom * 0.9 + target_zoom * 0.1;
             if (self.visual_state.camera_zoom - old_zoom).abs() > 0.001 {
-                changed = true;
+                changed |= true;
             }
 
             self.visual_state.last_amplitude = amp;
 
             let speed = 0.005 + (amp as f64 * 0.15) + (self.visual_state.treble * 0.01);
             self.audio_clock += speed;
-            changed = true;
+            changed |= true;
         }
 
         // 2. Library Refresh Updates
         while let Ok(update) = self.refresh_rx.try_recv() {
-            changed = true;
+            changed |= true;
             tracing::info!("Applying background library refresh update");
             self.is_refreshing = false;
             self.all_tracks = Arc::from(update.all_tracks);
@@ -783,7 +783,7 @@ impl App {
 
         // 3. Metadata Updates
         while let Ok(update) = self.metadata_rx.try_recv() {
-            changed = true;
+            changed |= true;
             tracing::debug!(idx = update.idx, "Received metadata update for track");
             if self.playing_idx == Some(update.idx) {
                 self.sample_rate = update.sample_rate;
@@ -844,19 +844,19 @@ impl App {
 
         if !is_empty && self.is_starting {
             self.is_starting = false;
-            changed = true;
+            changed |= true;
         }
 
         if self.is_playing && !is_empty {
             if let Some(start) = self.playback_start {
                 let new_pos = self.accumulated_pos + start.elapsed();
-                if new_pos.as_secs() != self.current_pos.as_secs() { changed = true; }
+                if new_pos.as_secs() != self.current_pos.as_secs() { changed |= true; }
                 self.current_pos = new_pos;
             }
             if self.current_track_duration.as_secs_f64() > 0.0 {
                 let new_prog = (self.current_pos.as_secs_f64() / self.current_track_duration.as_secs_f64()) as f32;
                 let new_prog = new_prog.clamp(0.0, 1.0);
-                if (new_prog - self.progress).abs() > 0.01 { changed = true; }
+                if (new_prog - self.progress).abs() > 0.01 { changed |= true; }
                 self.progress = new_prog;
             }
             if !self.lyrics.is_empty() {
@@ -867,7 +867,7 @@ impl App {
                 if self.current_lyric_idx != idx {
                     self.current_lyric_idx = idx;
                     if self.auto_scroll { self.lyrics_scroll = self.current_lyric_idx.saturating_sub(5) as u16; }
-                    changed = true;
+                    changed |= true;
                 }
             }
 
@@ -878,7 +878,7 @@ impl App {
                     let next = self.playing_idx.map(|i| (i + 1) % self.playback_track_list.len()).unwrap_or(0);
                     if let Some(track) = self.playback_track_list.get(next) {
                         let _ = self.play_track_at(track.clone(), next, false);
-                        changed = true;
+                        changed |= true;
                     }
                 }
             }
@@ -892,13 +892,13 @@ impl App {
                         self.last_error = Some(format!("SKIPPING BROKEN TRACK: {}", detail.unwrap_or_default()));
                     }
                     let _ = self.play_track_at(track.clone(), next, false);
-                    changed = true;
+                    changed |= true;
                 }
             } else if has_error {
                 if let Some(track) = &self.current_track {
                     if let Some(idx) = self.filtered_stations.iter().position(|s| s.name == track.title) {
                         self.play_radio(idx);
-                        changed = true;
+                        changed |= true;
                     }
                 }
             }

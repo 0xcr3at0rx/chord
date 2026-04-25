@@ -193,6 +193,7 @@ enum AudioCmd {
     SetVolume(f32),
     Pause,
     Resume,
+    #[allow(dead_code)]
     Stop,
     UpdateSampleRate(u32),
     RegisterRadioSink(Sink, u64),
@@ -221,7 +222,6 @@ struct AudioBackend {
     last_error_shared: std::sync::Arc<std::sync::Mutex<Option<String>>>,
     sample_queue: Arc<ArrayQueue<f32>>,
     analyzer: AudioAnalyzer,
-    is_null: bool,
 }
 
 impl AudioPlayer {
@@ -247,7 +247,7 @@ impl AudioPlayer {
         let mode = std::sync::Arc::new(std::sync::Mutex::new(if is_null { "NULL".into() } else { "PIPEWIRE".into() }));
         let last_error = std::sync::Arc::new(std::sync::Mutex::new(None));
 
-        let mut analyzer = AudioAnalyzer::new();
+        let analyzer = AudioAnalyzer::new();
         let dsp_state = analyzer.state.clone();
 
         if is_null {
@@ -285,7 +285,6 @@ impl AudioPlayer {
                 last_error_shared: backend_last_err,
                 sample_queue: backend_queue,
                 analyzer,
-                is_null,
             };
 
             let _ = backend.try_init(false);
@@ -459,6 +458,7 @@ impl AudioPlayer {
         let _ = self.cmd_tx.send(AudioCmd::Resume);
     }
 
+    #[allow(dead_code)]
     pub fn stop(&self) {
         let _ = self.cmd_tx.send(AudioCmd::Stop);
     }
@@ -471,6 +471,7 @@ impl AudioPlayer {
         self.has_error.load(std::sync::atomic::Ordering::Relaxed)
     }
 
+    #[allow(dead_code)]
     pub fn get_amplitude(&self) -> f32 {
         self.dsp_state.read().unwrap().amplitude
     }

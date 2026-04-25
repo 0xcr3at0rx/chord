@@ -2,7 +2,7 @@ use crossterm::event::KeyCode;
 use ratatui::style::Color;
 
 // --- APPLICATION CONSTANTS ---
-pub const DEFAULT_TICK_RATE_MS: u64 = 50;
+pub const DEFAULT_TICK_RATE_MS: u64 = 33;
 
 pub const KEY_DEBOUNCE_MS: u128 = 100;
 

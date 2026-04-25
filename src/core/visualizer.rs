@@ -66,48 +66,51 @@ impl<'a> Visualizer<'a> {
         let t3 = 0.08 * vol;
         let height_inv = 1.0 / height as f32;
 
-        (0..height)
-            .map(|y_row| {
-                let mut spans = Vec::new();
-                let norm_y = (height as f32 - 1.0 - y_row as f32) * height_inv;
-                let axis_dist = (norm_y - 0.5).abs();
+        let mut lines = Vec::with_capacity(height);
+        let mut row_spans = Vec::with_capacity(16);
+        let mut current_text = String::with_capacity(width);
 
-                let mut current_text = String::with_capacity(width);
-                let mut current_color = Color::Reset;
+        for y_row in 0..height {
+            row_spans.clear();
+            current_text.clear();
+            let norm_y = (height as f32 - 1.0 - y_row as f32) * height_inv;
+            let axis_dist = (norm_y - 0.5).abs();
+            let mut current_color = Color::Reset;
 
-                for i in 0..width {
-                    let dist = (norm_y - wave_ys[i]).abs();
+            for i in 0..width {
+                let dist = (norm_y - wave_ys[i]).abs();
 
-                    let (char_str, color) = if dist < t1 {
-                        (char_beat, color_beat)
-                    } else if dist < t2 {
-                        ("○", color_mid)
-                    } else if dist < t3 {
-                        ("·", color_tail)
-                    } else if axis_dist < 0.005 {
-                        ("─", self.config.theme.dim)
-                    } else {
-                        (" ", Color::Reset)
-                    };
+                let (char_str, color) = if dist < t1 {
+                    (char_beat, color_beat)
+                } else if dist < t2 {
+                    ("○", color_mid)
+                } else if dist < t3 {
+                    ("·", color_tail)
+                } else if axis_dist < 0.005 {
+                    ("─", self.config.theme.dim)
+                } else {
+                    (" ", Color::Reset)
+                };
 
-                    if color == current_color {
-                        current_text.push_str(char_str);
-                    } else {
-                        if !current_text.is_empty() {
-                            spans.push(Span::styled(std::mem::take(&mut current_text), Style::default().fg(current_color)));
-                        }
-                        current_text.push_str(char_str);
-                        current_color = color;
+                if color == current_color {
+                    current_text.push_str(char_str);
+                } else {
+                    if !current_text.is_empty() {
+                        row_spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
                     }
+                    current_text.clear();
+                    current_text.push_str(char_str);
+                    current_color = color;
                 }
-                
-                if !current_text.is_empty() {
-                    spans.push(Span::styled(current_text, Style::default().fg(current_color)));
-                }
+            }
+            
+            if !current_text.is_empty() {
+                row_spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
+            }
 
-                Line::from(spans)
-            })
-            .collect()
+            lines.push(Line::from(row_spans.clone()));
+        }
+        lines
     }
 }
 

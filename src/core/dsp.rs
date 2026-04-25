@@ -15,7 +15,11 @@ fn xor_abs(f: f32) -> f32 {
 pub struct DspState {
     pub waveform: Vec<f32>,
     pub spectrum: Vec<f32>,
+    pub wave_ys: Vec<f32>,
     pub amplitude: f32,
+    pub bass: f32,
+    pub mid: f32,
+    pub treble: f32,
     pub is_beat: bool,
 }
 
@@ -24,7 +28,11 @@ impl Default for DspState {
         Self {
             waveform: vec![0.0; FFT_SIZE],
             spectrum: vec![0.0; FFT_SIZE / 2],
+            wave_ys: Vec::new(),
             amplitude: 0.0,
+            bass: 0.0,
+            mid: 0.0,
+            treble: 0.0,
             is_beat: false,
         }
     }
@@ -34,6 +42,7 @@ pub struct AudioAnalyzer {
     fft_processor: Arc<dyn RealToComplex<f32>>,
     window: Vec<f32>,
     pub state: Arc<RwLock<DspState>>,
+    sample_rate: f32,
     
     // Pre-allocated buffers to avoid allocations in the audio path
     fft_input: Vec<f32>,
@@ -63,6 +72,7 @@ impl AudioAnalyzer {
             fft_processor,
             state: Arc::new(RwLock::new(DspState::default())),
             window,
+            sample_rate: 48000.0,
             fft_input: vec![0.0; FFT_SIZE],
             fft_output,
             energy_history: vec![0.0; 43],
@@ -70,6 +80,10 @@ impl AudioAnalyzer {
             energy_sum: 0.0,
             energy_avg: 0.0,
         }
+    }
+
+    pub fn set_sample_rate(&mut self, sample_rate: u32) {
+        self.sample_rate = sample_rate as f32;
     }
 
     pub fn process_samples(&mut self, samples: &[f32]) {
@@ -104,8 +118,6 @@ impl AudioAnalyzer {
             }
             
             current_amplitude = sum * samples_len_inv;
-            // Exponential moving average for smoothness
-            // state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2);
             // Optimized EMA: state.amplitude + 0.2 * (current_amplitude - state.amplitude)
             state.amplitude += 0.2 * (current_amplitude - state.amplitude);
         }
@@ -135,6 +147,22 @@ impl AudioAnalyzer {
                     let c = self.fft_output[i];
                     state.spectrum[i] = (c.re * c.re + c.im * c.im).sqrt();
                 }
+
+                // Energy band calculation
+                let bin_resolution = self.sample_rate / (FFT_SIZE as f32);
+                let bass_cutoff = (250.0 / bin_resolution) as usize;
+                let mid_cutoff = (4000.0 / bin_resolution) as usize;
+                let spec_len = state.spectrum.len();
+                let bass_end = bass_cutoff.min(spec_len);
+                let mid_end = mid_cutoff.min(spec_len);
+
+                let bass_sum: f32 = state.spectrum[..bass_end].iter().sum();
+                let mid_sum: f32 = state.spectrum[bass_end..mid_end].iter().sum();
+                let treble_sum: f32 = state.spectrum[mid_end..].iter().sum();
+
+                state.bass = state.bass * 0.8 + bass_sum * 0.2;
+                state.mid = state.mid * 0.8 + mid_sum * 0.2;
+                state.treble = state.treble * 0.8 + treble_sum * 0.2;
             }
         }
     }

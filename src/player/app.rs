@@ -49,40 +49,6 @@ pub struct RefreshUpdate {
     pub playlists: Box<[Playlist]>,
 }
 
-pub struct VisualizationState {
-    pub velocity: f64,
-    pub acceleration: f64,
-    pub rotation: f64,
-    pub angular_velocity: f64,
-    pub angular_acceleration: f64,
-    pub position: f64,
-    pub last_amplitude: f32,
-    pub bass: f64,
-    pub mid: f64,
-    pub treble: f64,
-    pub camera_zoom: f64,
-    pub beat_flash: f64,
-}
-
-impl Default for VisualizationState {
-    fn default() -> Self {
-        Self {
-            velocity: 0.0,
-            acceleration: 0.0,
-            rotation: 0.0,
-            angular_velocity: 0.0,
-            angular_acceleration: 0.0,
-            position: 0.0,
-            last_amplitude: 0.0,
-            bass: 0.0,
-            mid: 0.0,
-            treble: 0.0,
-            camera_zoom: 1.0,
-            beat_flash: 0.0,
-        }
-    }
-}
-
 pub struct App {
     pub all_tracks: Arc<[Arc<TrackMetadata>]>,
     pub filtered_tracks: Arc<[Arc<TrackMetadata>]>,
@@ -139,9 +105,7 @@ pub struct App {
     pub refresh_tx: mpsc::Sender<RefreshUpdate>,
     pub is_refreshing: bool,
     pub needs_redraw: bool,
-    pub audio_clock: f64,
     pub radio_loaded: bool,
-    pub visual_state: VisualizationState,
 }
 
 impl App {
@@ -380,9 +344,7 @@ impl App {
             refresh_tx,
             is_refreshing: false,
             needs_redraw: false,
-            audio_clock: 0.0,
             radio_loaded: false,
-            visual_state: VisualizationState::default(),
         };
         Ok(app)
     }
@@ -700,66 +662,15 @@ impl App {
     pub async fn update(&mut self) -> bool {
         let mut changed = false;
         
-        // 1. Kinetic physics and energy bands
+        // 1. Check if we need to redraw for the visualizer
         if self.is_playing && (self.input_mode == InputMode::Offline || self.input_mode == InputMode::Online) {
-            let dsp = self.audio.dsp_state.read().unwrap();
-            let amp = dsp.amplitude;
-
-            // Audio-Kinematics
-            let d_amp = (amp - self.visual_state.last_amplitude) as f64;
-            self.visual_state.acceleration = d_amp * 2.0;
-            self.visual_state.velocity =
-                (self.visual_state.velocity * 0.9) + (self.visual_state.acceleration * 0.1);
-            
-            if self.visual_state.velocity.abs() > 0.0001 {
-                self.visual_state.position += self.visual_state.velocity;
-                changed |= true;
-            }
-
-            // Angular kinematics
-            let spectrum_sum: f32 = dsp.spectrum.iter().take(20).sum();
-            self.visual_state.angular_acceleration =
-                (spectrum_sum as f64 * 0.001) - (self.visual_state.angular_velocity * 0.05);
-            self.visual_state.angular_velocity += self.visual_state.angular_acceleration;
-            
-            if self.visual_state.angular_velocity.abs() > 0.0001 {
-                self.visual_state.rotation += self.visual_state.angular_velocity;
-                changed |= true;
-            }
-
-            // Use pre-calculated energy bands from AudioAnalyzer
-            self.visual_state.bass = dsp.bass as f64;
-            self.visual_state.mid = dsp.mid as f64;
-            self.visual_state.treble = dsp.treble as f64;
-
-            // Update beat flash
-            if dsp.is_beat {
-                self.visual_state.beat_flash = 1.0;
-                changed |= true;
-            } else if self.visual_state.beat_flash > 0.001 {
-                self.visual_state.beat_flash = (self.visual_state.beat_flash - 0.05).max(0.0);
-                changed |= true;
-            }
-
-            // Camera zoom reacts to bass
-            let target_zoom = 1.0 + (self.visual_state.bass * 0.05).min(0.5);
-            let old_zoom = self.visual_state.camera_zoom;
-            self.visual_state.camera_zoom =
-                self.visual_state.camera_zoom * 0.9 + target_zoom * 0.1;
-            if (self.visual_state.camera_zoom - old_zoom).abs() > 0.001 {
-                changed |= true;
-            }
-
-            self.visual_state.last_amplitude = amp;
-
-            let speed = 0.005 + (amp as f64 * 0.15) + (self.visual_state.treble * 0.01);
-            self.audio_clock += speed;
-            changed |= true;
+            // We always want to redraw when playing to keep the visualizer smooth
+            changed = true;
         }
 
         // 2. Library Refresh Updates
         while let Ok(update) = self.refresh_rx.try_recv() {
-            changed |= true;
+            changed = true;
             tracing::info!("Applying background library refresh update");
             self.is_refreshing = false;
             self.all_tracks = Arc::from(update.all_tracks);
@@ -1263,7 +1174,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn create_test_app() -> App {
-        let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (_metadata_tx, metadata_rx) = mpsc::channel(16);
         let (worker_tx, _) = mpsc::channel(16);
         let (refresh_tx, refresh_rx) = mpsc::channel(2);
         let settings = Arc::new(Settings::new().unwrap());
@@ -1325,18 +1236,8 @@ mod tests {
             refresh_tx,
             is_refreshing: false,
             needs_redraw: false,
-            audio_clock: 0.0,
             radio_loaded: false,
-            visual_state: VisualizationState::default(),
         }
-    }
-
-    #[test]
-    fn test_visualization_state_default() {
-        let state = VisualizationState::default();
-        assert_eq!(state.velocity, 0.0);
-        assert_eq!(state.camera_zoom, 1.0);
-        assert_eq!(state.position, 0.0);
     }
 
     #[test]
@@ -1835,44 +1736,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_visual_state_kinematics_velocity() {
-        let mut app = create_test_app();
-        app.is_playing = true;
-        app.input_mode = InputMode::Offline;
-        
-        // Simulate amplitude increase
-        {
-            let mut dsp = app.audio.dsp_state.write().unwrap();
-            dsp.amplitude = 0.5;
-        }
-        app.update().await;
-        let v1 = app.visual_state.velocity;
-        assert!(v1 > 0.0);
-        
-        // Update again, velocity should continue to affect position
-        let p1 = app.visual_state.position;
-        app.update().await;
-        assert!(app.visual_state.position != p1);
-    }
-
-    #[tokio::test]
-    async fn test_visual_state_kinematics_angular() {
-        let mut app = create_test_app();
-        app.is_playing = true;
-        app.input_mode = InputMode::Online;
-        
-        {
-            let mut dsp = app.audio.dsp_state.write().unwrap();
-            dsp.spectrum = vec![0.1; 1024]; // High spectrum sum
-        }
-        app.update().await;
-        assert!(app.visual_state.angular_velocity > 0.0);
-        let r1 = app.visual_state.rotation;
-        app.update().await;
-        assert!(app.visual_state.rotation != r1);
-    }
-
-    #[tokio::test]
     async fn test_metadata_update_ignores_wrong_index() {
         let (tx, rx) = mpsc::channel(16);
         let mut app = create_test_app();
@@ -2007,20 +1870,5 @@ mod tests {
         
         app.update().await;
         assert_eq!(app.all_tracks.len(), 2);
-    }
-
-    #[tokio::test]
-    async fn test_visual_state_beat_flash_decay() {
-        let mut app = create_test_app();
-        app.is_playing = true;
-        app.input_mode = InputMode::Offline;
-        app.visual_state.beat_flash = 1.0;
-        
-        {
-            let mut dsp = app.audio.dsp_state.write().unwrap();
-            dsp.is_beat = false;
-        }
-        app.update().await;
-        assert!(app.visual_state.beat_flash < 1.0);
     }
 }

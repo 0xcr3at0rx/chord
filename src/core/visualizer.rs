@@ -103,19 +103,19 @@ impl<'a> Visualizer<'a> {
                     current_text.push_str(char_str);
                 } else {
                     if !current_text.is_empty() {
-                        row_spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
+                        let text = std::mem::replace(&mut current_text, String::with_capacity(width - i));
+                        row_spans.push(Span::styled(text, Style::default().fg(current_color)));
                     }
-                    current_text.clear();
                     current_text.push_str(char_str);
                     current_color = color;
                 }
             }
             
             if !current_text.is_empty() {
-                row_spans.push(Span::styled(current_text.clone(), Style::default().fg(current_color)));
+                row_spans.push(Span::styled(std::mem::take(&mut current_text), Style::default().fg(current_color)));
             }
 
-            lines.push(Line::from(row_spans.clone()));
+            lines.push(Line::from(std::mem::take(&mut row_spans)));
         }
         lines
     }

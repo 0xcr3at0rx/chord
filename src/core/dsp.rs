@@ -92,44 +92,51 @@ impl AudioAnalyzer {
         let current_amplitude;
         let samples_len_inv = 1.0 / samples.len() as f32;
 
-        {
-            let mut state = self.state.write().unwrap();
-            
-            // Copy waveform efficiently
-            let to_copy = std::cmp::min(samples.len(), FFT_SIZE);
-            state.waveform[..to_copy].copy_from_slice(&samples[..to_copy]);
-            
-            // SIMD-accelerated amplitude calculation
-            let mut sum_simd = f32x8::ZERO;
-            let chunks = samples.chunks_exact(8);
-            let remainder = chunks.remainder();
-            
-            for chunk in chunks {
-                let v = f32x8::from(chunk);
-                sum_simd += v.abs();
-            }
-            
-            let mut sum = sum_simd.reduce_add();
-            for &s in remainder {
-                sum += xor_abs(s);
-            }
-            
-            current_amplitude = sum * samples_len_inv;
-            
-            // Fixed-point EMA: state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2)
-            // Scale by 2^16 (65536) and use i64 for safety
-            // 0.8 * 65536 approx 52429
-            // 0.2 * 65536 approx 13107
-            if current_amplitude.is_finite() {
-                let amp_fixed = (state.amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
-                let cur_amp_fixed = (current_amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
-                let next_amp_fixed = (amp_fixed * 52429 + cur_amp_fixed * 13107) >> 16;
-                state.amplitude = next_amp_fixed as f32 * 0.0000152587890625; // Multiply by 1/65536
-            } else {
-                state.amplitude = current_amplitude;
-            }
+        // 1. Amplitude Calculation (Does not need state lock)
+        let mut sum_simd = f32x8::ZERO;
+        let chunks = samples.chunks_exact(8);
+        let remainder = chunks.remainder();
+        
+        for chunk in chunks {
+            let v = f32x8::from(chunk);
+            sum_simd += v.abs();
+        }
+        
+        let mut sum = sum_simd.reduce_add();
+        for &s in remainder {
+            sum += xor_abs(s);
+        }
+        
+        current_amplitude = sum * samples_len_inv;
+
+        // 2. Beat Detection and FFT Analysis
+        let mut is_beat = None;
+        if samples.len() >= FFT_SIZE {
+            is_beat = Some(self.detect_beat_adaptive(current_amplitude));
         }
 
+        // 3. Update State with single lock
+        let mut state = self.state.write().unwrap();
+        
+        // Update waveform
+        let to_copy = std::cmp::min(samples.len(), FFT_SIZE);
+        state.waveform[..to_copy].copy_from_slice(&samples[..to_copy]);
+        
+        // Fixed-point EMA for amplitude smoothing
+        if current_amplitude.is_finite() {
+            let amp_fixed = (state.amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+            let cur_amp_fixed = (current_amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+            let next_amp_fixed = (amp_fixed * 52429 + cur_amp_fixed * 13107) >> 16;
+            state.amplitude = next_amp_fixed as f32 * 0.0000152587890625;
+        } else {
+            state.amplitude = current_amplitude;
+        }
+
+        if let Some(b) = is_beat {
+            state.is_beat = b;
+        }
+
+        // 4. Spectral Analysis (FFT)
         if samples.len() >= FFT_SIZE {
             // SIMD-accelerated windowing
             let s_chunks = samples[..FFT_SIZE].chunks_exact(8);
@@ -144,12 +151,7 @@ impl AudioAnalyzer {
 
             // Process FFT using pre-allocated output buffer
             if self.fft_processor.process(&mut self.fft_input, &mut self.fft_output).is_ok() {
-                let is_beat = self.detect_beat_adaptive(current_amplitude);
-                
-                let mut state = self.state.write().unwrap();
-                state.is_beat = is_beat;
-                
-                // Update spectrum in place to avoid allocation
+                // Update spectrum in place
                 let spec_half_len = FFT_SIZE >> 1; 
                 for i in 0..spec_half_len {
                     let c = self.fft_output[i];

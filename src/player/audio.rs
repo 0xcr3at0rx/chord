@@ -336,7 +336,10 @@ impl AudioPlayer {
                                                 .get(&url).send().map_err(|e| e.to_string())?;
                                             if !response.status().is_success() { return Err(format!("HTTP {}", response.status())); }
                                             if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id { return Err("Canceled".into()); }
-                                            let reader = StreamingReader::new(response);
+                                            
+                                            // Add BufReader with 64KB buffer for better network throughput
+                                            let reader = std::io::BufReader::with_capacity(65536, response);
+                                            let reader = StreamingReader::new(reader);
                                             let source = Decoder::new(reader).map_err(|e| e.to_string())?;
                                             
                                             // Send sample rate update
@@ -402,9 +405,12 @@ impl AudioPlayer {
                     std::sync::atomic::Ordering::Relaxed,
                 );
 
-                // Small sleep if we didn't do much to avoid 100% CPU
+                // Small sleep to avoid 100% CPU and yield to audio playback thread
                 if !processed {
                     std::thread::sleep(Duration::from_millis(5));
+                } else {
+                    // Yield even if we processed samples to avoid starving the audio thread
+                    std::thread::sleep(Duration::from_millis(1));
                 }
             }
         });

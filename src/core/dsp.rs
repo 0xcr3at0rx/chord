@@ -106,7 +106,6 @@ impl AudioAnalyzer {
             
             for chunk in chunks {
                 let v = f32x8::from(chunk);
-                // Bitwise ABS for SIMD: f32x8 abs is usually highly optimized but let's be explicit if we wanted to
                 sum_simd += v.abs();
             }
             
@@ -116,8 +115,19 @@ impl AudioAnalyzer {
             }
             
             current_amplitude = sum * samples_len_inv;
-            // Optimized EMA: state.amplitude + 0.2 * (current_amplitude - state.amplitude)
-            state.amplitude += 0.2 * (current_amplitude - state.amplitude);
+            
+            // Fixed-point EMA: state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2)
+            // Scale by 2^16 (65536) and use i64 for safety
+            // 0.8 * 65536 approx 52429
+            // 0.2 * 65536 approx 13107
+            if current_amplitude.is_finite() {
+                let amp_fixed = (state.amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+                let cur_amp_fixed = (current_amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+                let next_amp_fixed = (amp_fixed * 52429 + cur_amp_fixed * 13107) >> 16;
+                state.amplitude = next_amp_fixed as f32 * 0.0000152587890625; // Multiply by 1/65536
+            } else {
+                state.amplitude = current_amplitude;
+            }
         }
 
         if samples.len() >= FFT_SIZE {
@@ -140,8 +150,7 @@ impl AudioAnalyzer {
                 state.is_beat = is_beat;
                 
                 // Update spectrum in place to avoid allocation
-                // Auto-vectorization is often better than manual SIMD for this simple map
-                let spec_half_len = FFT_SIZE >> 1; // Bit shift for / 2
+                let spec_half_len = FFT_SIZE >> 1; 
                 for i in 0..spec_half_len {
                     let c = self.fft_output[i];
                     state.spectrum[i] = (c.re * c.re + c.im * c.im).sqrt();
@@ -159,26 +168,45 @@ impl AudioAnalyzer {
                 let mid_sum: f32 = state.spectrum[bass_end..mid_end].iter().sum();
                 let treble_sum: f32 = state.spectrum[mid_end..].iter().sum();
 
-                state.bass = state.bass * 0.8 + bass_sum * 0.2;
-                state.mid = state.mid * 0.8 + mid_sum * 0.2;
-                state.treble = state.treble * 0.8 + treble_sum * 0.2;
+                // Fixed-point smoothing for bands
+                if bass_sum.is_finite() && mid_sum.is_finite() && treble_sum.is_finite() {
+                    let bass_fixed = (state.bass.clamp(0.0, 1e6) * 65536.0) as i64;
+                    let cur_bass_fixed = (bass_sum.clamp(0.0, 1e6) * 65536.0) as i64;
+                    state.bass = ((bass_fixed * 52429 + cur_bass_fixed * 13107) >> 16) as f32 * 0.0000152587890625;
+
+                    let mid_fixed = (state.mid.clamp(0.0, 1e6) * 65536.0) as i64;
+                    let cur_mid_fixed = (mid_sum.clamp(0.0, 1e6) * 65536.0) as i64;
+                    state.mid = ((mid_fixed * 52429 + cur_mid_fixed * 13107) >> 16) as f32 * 0.0000152587890625;
+
+                    let treble_fixed = (state.treble.clamp(0.0, 1e6) * 65536.0) as i64;
+                    let cur_treble_fixed = (treble_sum.clamp(0.0, 1e6) * 65536.0) as i64;
+                    state.treble = ((treble_fixed * 52429 + cur_treble_fixed * 13107) >> 16) as f32 * 0.0000152587890625;
+                } else {
+                    state.bass = bass_sum;
+                    state.mid = mid_sum;
+                    state.treble = treble_sum;
+                }
             }
         }
     }
 
     fn detect_beat_adaptive(&mut self, amplitude: f32) -> bool {
-        // Fast Ring Buffer update O(1)
-        self.energy_sum -= self.energy_history[self.energy_idx];
-        self.energy_history[self.energy_idx] = amplitude;
-        self.energy_sum += amplitude;
+        // Use fixed-point for history to avoid precision drift
+        let amp_fixed = (amplitude.clamp(0.0, 1e6) * 65536.0) as i64;
+        let old_fixed = (self.energy_history[self.energy_idx] * 65536.0) as i64;
         
-        // Bitwise AND for power of 2 modulo (64)
+        let sum_fixed = (self.energy_sum * 65536.0) as i64;
+        let next_sum_fixed = sum_fixed - old_fixed + amp_fixed;
+        
+        self.energy_history[self.energy_idx] = amplitude;
+        self.energy_sum = next_sum_fixed as f32 * 0.0000152587890625;
+        
         self.energy_idx = (self.energy_idx + 1) & 63;
         
         // Fast reciprocal multiply (1/64)
         self.energy_avg = self.energy_sum * 0.015625;
         
-        // Branchless-style comparison (result is bool)
+        // Branchless-style comparison
         (amplitude > self.energy_avg * 1.6) & (amplitude > 0.05)
     }
 }
@@ -229,7 +257,7 @@ mod tests {
         
         let state = analyzer.state.read().unwrap();
         // Amplitude should be updated (EMA logic: 0.0 * 0.8 + 0.5 * 0.2 = 0.1)
-        assert!((state.amplitude - 0.1).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.1).abs() < 1e-3);
         assert!(!state.is_beat);
         
         // Check waveform copy (only first 100 samples copied)
@@ -246,7 +274,7 @@ mod tests {
         
         let state = analyzer.state.read().unwrap();
         // EMA logic: 0.0 * 0.8 + 1.0 * 0.2 = 0.2
-        assert!((state.amplitude - 0.2).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.2).abs() < 1e-3);
         
         // Check waveform copy
         assert_eq!(state.waveform, samples);
@@ -259,7 +287,7 @@ mod tests {
         analyzer.process_samples(&samples);
         
         let state = analyzer.state.read().unwrap();
-        assert!((state.amplitude - 0.1).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.1).abs() < 1e-3);
         
         // Only first FFT_SIZE elements should be copied into waveform
         assert_eq!(state.waveform, vec![0.5; FFT_SIZE]);
@@ -315,7 +343,7 @@ mod tests {
         let state = analyzer.state.read().unwrap();
         // All absolute values are 1.0, so avg is 1.0
         // EMA: 0.0 * 0.8 + 1.0 * 0.2 = 0.2
-        assert!((state.amplitude - 0.2).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.2).abs() < 1e-3);
     }
 
     #[test]
@@ -416,7 +444,7 @@ mod tests {
         for _ in 0..50 {
             analyzer.process_samples(&silence);
             let state = analyzer.state.read().unwrap();
-            assert!(state.amplitude < last_amplitude);
+            assert!(state.amplitude <= last_amplitude);
             last_amplitude = state.amplitude;
         }
         assert!(last_amplitude < 0.001);
@@ -456,7 +484,7 @@ mod tests {
         analyzer.process_samples(&samples);
         let state = analyzer.state.read().unwrap();
         // EMA: 0.0 * 0.8 + 2.0 * 0.2 = 0.4
-        assert!((state.amplitude - 0.4).abs() < f32::EPSILON);
+        assert!((state.amplitude - 0.4).abs() < 1e-4);
     }
 
     #[test]
@@ -751,11 +779,11 @@ mod tests {
         analyzer.process_samples(&vec![1.0; FFT_SIZE]);
         let amp1 = analyzer.state.read().unwrap().amplitude;
         // EMA: 0.0 * 0.8 + 1.0 * 0.2 = 0.2
-        assert!((amp1 - 0.2).abs() < f32::EPSILON);
+        assert!((amp1 - 0.2).abs() < 1e-3);
         
         analyzer.process_samples(&vec![1.0; FFT_SIZE]);
         let amp2 = analyzer.state.read().unwrap().amplitude;
         // EMA: 0.2 * 0.8 + 1.0 * 0.2 = 0.16 + 0.2 = 0.36
-        assert!((amp2 - 0.36).abs() < f32::EPSILON);
+        assert!((amp2 - 0.36).abs() < 1e-3);
     }
 }

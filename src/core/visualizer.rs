@@ -52,41 +52,48 @@ impl<'a> Visualizer<'a> {
         let width_inv = 1.0 / width as f32;
         let scale = 0.45 * vol * beat_pulse;
 
-        let mut wave_ys = Vec::with_capacity(width);
+        // Use 1024 as our fixed-point scale (2^10)
+        let mut wave_ys_fixed = Vec::with_capacity(width);
         for i in 0..width {
             let norm_x = i as f32 * width_inv;
             let wave_idx = (norm_x * waveform_len_f) as usize;
             let sample = unsafe { *self.config.dsp.waveform.get_unchecked(wave_idx.min(waveform_len - 1)) };
-            wave_ys.push(sample * scale + 0.5);
+            let y = sample * scale + 0.5;
+            wave_ys_fixed.push((y * 1024.0) as i32);
         }
 
-        // Pre-calculate inner loop thresholds
-        let t1 = 0.015 * vol;
-        let t2 = 0.04 * vol;
-        let t3 = 0.08 * vol;
-        let height_inv = 1.0 / height as f32;
+        // Pre-calculate thresholds in fixed point
+        let t1_fixed = (0.015 * vol * 1024.0) as i32;
+        let t2_fixed = (0.04 * vol * 1024.0) as i32;
+        let t3_fixed = (0.08 * vol * 1024.0) as i32;
+        let axis_thresh_fixed = (0.005 * 1024.0) as i32;
+        
+        let height_scale_fixed = (1024.0 / height as f32) as i32;
 
         let mut lines = Vec::with_capacity(height);
-        let mut row_spans = Vec::with_capacity(width >> 2); // Bit shift for / 4
+        let mut row_spans = Vec::with_capacity(width >> 2); 
         let mut current_text = String::with_capacity(width);
 
         for y_row in 0..height {
             row_spans.clear();
             current_text.clear();
-            let norm_y = (height as f32 - 1.0 - y_row as f32) * height_inv;
-            let axis_dist = (norm_y - 0.5).abs();
+            
+            // Fixed-point norm_y: ((height - 1 - y_row) * 1024) / height
+            let norm_y_fixed = (height as i32 - 1 - y_row as i32) * height_scale_fixed;
+            let axis_dist_fixed = (norm_y_fixed - 512).abs(); // 0.5 * 1024 = 512
+            
             let mut current_color = Color::Reset;
 
             for i in 0..width {
-                let dist = (norm_y - wave_ys[i]).abs();
+                let dist_fixed = (norm_y_fixed - wave_ys_fixed[i]).abs();
 
-                let (char_str, color) = if dist < t1 {
+                let (char_str, color) = if dist_fixed < t1_fixed {
                     (char_beat, color_beat)
-                } else if dist < t2 {
+                } else if dist_fixed < t2_fixed {
                     ("○", color_mid)
-                } else if dist < t3 {
+                } else if dist_fixed < t3_fixed {
                     ("·", color_tail)
-                } else if axis_dist < 0.005 {
+                } else if axis_dist_fixed < axis_thresh_fixed {
                     ("─", self.config.theme.dim)
                 } else {
                     (" ", Color::Reset)

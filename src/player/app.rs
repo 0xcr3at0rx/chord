@@ -133,7 +133,6 @@ pub struct App {
     pub theme: crate::core::constants::Theme,
     pub index: Arc<LibraryIndex>,
     pub metadata_rx: mpsc::Receiver<TrackMetadataUpdate>,
-    pub metadata_tx: mpsc::Sender<TrackMetadataUpdate>,
     pub metadata_worker_tx: mpsc::Sender<(usize, PathBuf, u64)>,
     pub active_metadata_request: Arc<std::sync::atomic::AtomicU64>,
     pub refresh_rx: mpsc::Receiver<RefreshUpdate>,
@@ -209,9 +208,8 @@ impl App {
         let (refresh_tx, refresh_rx) = mpsc::channel(2);
 
         let active_metadata_request = Arc::new(std::sync::atomic::AtomicU64::new(0));
-
+        
         // Spawn dedicated Metadata Worker Thread
-        let m_tx = metadata_tx.clone();
         let active_req_clone = Arc::clone(&active_metadata_request);
         std::thread::spawn(move || {
             while let Some((idx, path, request_id)) = worker_rx.blocking_recv() {
@@ -263,7 +261,7 @@ impl App {
                         continue;
                     }
 
-                    let _ = m_tx.blocking_send(TrackMetadataUpdate {
+                    let _ = metadata_tx.blocking_send(TrackMetadataUpdate {
                         idx,
                         sample_rate: props.sample_rate().unwrap_or(0),
                         channels: props.channels().unwrap_or(0),
@@ -376,7 +374,6 @@ impl App {
             theme,
             index,
             metadata_rx,
-            metadata_tx,
             metadata_worker_tx: worker_tx,
             active_metadata_request,
             refresh_rx,
@@ -1361,7 +1358,6 @@ mod tests {
             theme: crate::core::config::ThemeConfig::default().to_theme(),
             index,
             metadata_rx,
-            metadata_tx,
             metadata_worker_tx: worker_tx,
             active_metadata_request: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             refresh_rx,
@@ -1917,10 +1913,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_update_ignores_wrong_index() {
+        let (tx, rx) = mpsc::channel(16);
         let mut app = create_test_app();
+        app.metadata_rx = rx; // Inject our test receiver
         app.playing_idx = Some(1);
         
-        app.metadata_tx.try_send(TrackMetadataUpdate {
+        tx.try_send(TrackMetadataUpdate {
             idx: 2, // Wrong index
             sample_rate: 44100,
             channels: 2,
@@ -1937,13 +1935,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_update_updates_verified_status() {
+        let (tx, rx) = mpsc::channel(16);
         let mut app = create_test_app();
+        app.metadata_rx = rx; // Inject our test receiver
         let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "Unverified".into(), status: Some("unverified".into()), ..TrackMetadata::default() });
         app.playback_track_list = Arc::from(vec![t1]);
         app.playing_idx = Some(0);
         app.current_track = Some(app.playback_track_list[0].clone());
 
-        app.metadata_tx.try_send(TrackMetadataUpdate {
+        tx.try_send(TrackMetadataUpdate {
             idx: 0,
             sample_rate: 44100,
             channels: 2,

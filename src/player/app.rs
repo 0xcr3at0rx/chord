@@ -132,10 +132,12 @@ pub struct App {
     pub settings: Arc<Settings>,
     pub theme: crate::core::constants::Theme,
     pub index: Arc<LibraryIndex>,
-    pub metadata_rx: mpsc::UnboundedReceiver<TrackMetadataUpdate>,
-    pub metadata_tx: mpsc::UnboundedSender<TrackMetadataUpdate>,
-    pub refresh_rx: mpsc::UnboundedReceiver<RefreshUpdate>,
-    pub refresh_tx: mpsc::UnboundedSender<RefreshUpdate>,
+    pub metadata_rx: mpsc::Receiver<TrackMetadataUpdate>,
+    pub metadata_worker_tx: mpsc::Sender<(usize, PathBuf, u64)>,
+    pub active_metadata_request: Arc<std::sync::atomic::AtomicU64>,
+    pub refresh_rx: mpsc::Receiver<RefreshUpdate>,
+    pub refresh_tx: mpsc::Sender<RefreshUpdate>,
+    pub is_refreshing: bool,
     pub needs_redraw: bool,
     pub audio_clock: f64,
     pub radio_loaded: bool,
@@ -201,8 +203,78 @@ impl App {
         index: Arc<LibraryIndex>,
     ) -> ChordResult<App> {
         tracing::info!("Creating new App instance");
-        let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (worker_tx, mut worker_rx) = mpsc::channel::<(usize, PathBuf, u64)>(16);
+        let (refresh_tx, refresh_rx) = mpsc::channel(2);
+
+        let active_metadata_request = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        
+        // Spawn dedicated Metadata Worker Thread
+        let active_req_clone = Arc::clone(&active_metadata_request);
+        std::thread::spawn(move || {
+            while let Some((idx, path, request_id)) = worker_rx.blocking_recv() {
+                // Pre-check
+                if active_req_clone.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                    continue;
+                }
+
+                if let Ok(probed) = lofty::read_from_path(&path) {
+                    use lofty::file::AudioFile;
+                    use lofty::prelude::*;
+                    let props = probed.properties();
+                    let duration = props.duration();
+
+                    if active_req_clone.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                        continue;
+                    }
+
+                    let mut genre = None;
+                    let mut label = None;
+                    let mut desc = None;
+                    let mut art = None;
+                    let mut title = None;
+                    let mut artist = None;
+                    let mut album = None;
+
+                    if let Some(tag) = probed.primary_tag() {
+                        title = tag.title().map(|s| s.to_string());
+                        artist = tag.artist().map(|s| s.to_string());
+                        album = tag.album().map(|s| s.to_string());
+                        genre = tag.genre().map(|s| s.to_string());
+                        label = tag
+                            .get_string(&lofty::tag::ItemKey::Label)
+                            .map(|s| s.to_string())
+                            .or_else(|| {
+                                tag.get_string(&lofty::tag::ItemKey::Publisher)
+                                    .map(|s| s.to_string())
+                            });
+                        desc = tag
+                            .get_string(&lofty::tag::ItemKey::Comment)
+                            .map(|s| s.to_string());
+                        
+                        if let Some(picture) = tag.pictures().first() {
+                            art = Some(picture.data().to_vec());
+                        }
+                    }
+
+                    if active_req_clone.load(std::sync::atomic::Ordering::SeqCst) != request_id {
+                        continue;
+                    }
+
+                    let _ = metadata_tx.blocking_send(TrackMetadataUpdate {
+                        idx,
+                        sample_rate: props.sample_rate().unwrap_or(0),
+                        channels: props.channels().unwrap_or(0),
+                        bitrate: props.audio_bitrate().unwrap_or(0),
+                        bit_depth: props.bit_depth().unwrap_or(0),
+                        title, artist, album, genre, label,
+                        description: desc,
+                        cover_art: art,
+                        duration,
+                    });
+                }
+            }
+        });
 
         let config = settings
             .config
@@ -302,9 +374,11 @@ impl App {
             theme,
             index,
             metadata_rx,
-            metadata_tx,
+            metadata_worker_tx: worker_tx,
+            active_metadata_request,
             refresh_rx,
             refresh_tx,
+            is_refreshing: false,
             needs_redraw: false,
             audio_clock: 0.0,
             radio_loaded: false,
@@ -357,6 +431,11 @@ impl App {
 
     #[tracing::instrument(skip(self))]
     pub async fn refresh_library(&mut self) {
+        if self.is_refreshing {
+            tracing::debug!("Library refresh already in progress, skipping");
+            return;
+        }
+
         tracing::info!("Refreshing library (background)");
         let music_dir = match self.settings.config.read() {
             Ok(c) => c.library.music_dir.clone(),
@@ -367,6 +446,7 @@ impl App {
             }
         };
         
+        self.is_refreshing = true;
         let index_clone = Arc::clone(&self.index);
         let tx = self.refresh_tx.clone();
         
@@ -392,7 +472,7 @@ impl App {
             let _ = tx.send(RefreshUpdate {
                 all_tracks: tracks,
                 playlists,
-            });
+            }).await;
         });
     }
 
@@ -540,17 +620,14 @@ impl App {
             self.is_starting = true;
             self.audio.play_stream(url);
             self.is_playing = true;
-            self.current_track = None;
-            self.accumulated_pos = Duration::from_secs(0);
-            self.current_pos = Duration::from_secs(0);
-            self.playback_start = Some(Instant::now());
-            self.lyrics.clear();
-            self.last_error = None;
-            self.generate_radio_art(&name);
-
+            self.current_track = None; // Reset before setting new one for radio
+            
+            // Invalidate any pending metadata requests from previously selected tracks
+            self.active_metadata_request.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            
             self.current_track = Some(Arc::new(crate::core::models::TrackMetadata {
                 track_id: "radio".into(),
-                title: name.into(),
+                title: name.clone(), // Use cloned name
                 artist: format!("RADIO: {}", country).into(),
                 album: tags.clone(),
                 album_art_url: None,
@@ -564,8 +641,17 @@ impl App {
                 label: None,
                 bit_depth: None,
                 sampling_rate: None,
-                status: Some("verified".into()),
+                status: Some("radio".into()),
             }));
+
+            self.clean_image_cache();
+            
+            self.accumulated_pos = Duration::from_secs(0);
+            self.current_pos = Duration::from_secs(0);
+            self.playback_start = Some(Instant::now());
+            self.lyrics.clear();
+            self.last_error = None;
+            self.generate_radio_art(&name); // Use cloned name
         }
     }
 
@@ -677,6 +763,7 @@ impl App {
 
         while let Ok(update) = self.refresh_rx.try_recv() {
             tracing::info!("Applying background library refresh update");
+            self.is_refreshing = false;
             self.all_tracks = Arc::from(update.all_tracks);
             self.playlists = update.playlists;
             
@@ -731,28 +818,8 @@ impl App {
                     }
                 }
 
-                let mut keys_to_keep = std::collections::HashSet::new();
-
                 if let Some(track) = &self.current_track {
                     let cache_key = format!("{}_{:?}", track.track_id, self.theme.accent);
-                    keys_to_keep.insert(cache_key.clone());
-
-                    // Add next and prev track ids to keys_to_keep to retain them
-                    if !self.playback_track_list.is_empty() {
-                        let len = self.playback_track_list.len();
-                        let idx = self.playing_idx.unwrap_or(0);
-                        let next_idx = (idx + 1) % len;
-                        let prev_idx = (idx + len - 1) % len;
-
-                        if let Some(next_t) = self.playback_track_list.get(next_idx) {
-                            keys_to_keep
-                                .insert(format!("{}_{:?}", next_t.track_id, self.theme.accent));
-                        }
-                        if let Some(prev_t) = self.playback_track_list.get(prev_idx) {
-                            keys_to_keep
-                                .insert(format!("{}_{:?}", prev_t.track_id, self.theme.accent));
-                        }
-                    }
 
                     if let Some(img) = self.image_cache.get(&cache_key) {
                         self.cached_image = Some(Arc::clone(img));
@@ -779,18 +846,9 @@ impl App {
                         // Clear raw bytes after decoding to save RAM
                         self.current_cover_art = None;
                     }
-
                 }
 
-                // Retain only adjacent items and the CURRENT radio station art
-                let current_radio_key = self.current_track.as_ref()
-                    .and_then(|t| if t.status.as_deref() == Some("radio") {
-                        Some(format!("radio_{}_{:?}", t.title, self.theme.accent))
-                    } else { None });
-
-                self.image_cache.retain(|k, _| {
-                    keys_to_keep.contains(k) || (current_radio_key.as_ref() == Some(k))
-                });
+                self.clean_image_cache();
 
                 self.needs_redraw = true;
             }
@@ -986,6 +1044,7 @@ impl App {
         self.is_playing = false;
         self.is_starting = true;
 
+        // Reset tech info immediately
         self.current_genre = None;
         self.current_label = None;
         self.current_description = None;
@@ -995,75 +1054,36 @@ impl App {
         self.bitrate = 0;
         self.bit_depth = 0;
 
+        // Proactively clean image cache to free RAM during transitions
+        self.playing_idx = Some(idx);
+        self.current_track = Some(track.clone()); // Update current track BEFORE cleaning
+        if update_playback_list {
+            self.playback_track_list = Arc::clone(&self.filtered_tracks);
+        }
+        self.clean_image_cache();
+
         if let Some(path_str) = &track.file_path {
             let path = PathBuf::from(path_str);
             if path.exists() {
                 self.load_lyrics(&path);
                 self.audio.play(path.clone());
                 self.is_playing = true;
-                self.playing_idx = Some(idx);
-                self.current_track = Some(track.clone());
-                if update_playback_list {
-                    self.playback_track_list = Arc::clone(&self.filtered_tracks);
-                }
+                // self.current_track = Some(track.clone()); // Already updated above
                 self.accumulated_pos = Duration::from_secs(0);
                 self.current_pos = Duration::from_secs(0);
                 self.playback_start = Some(Instant::now());
                 self.last_error = None;
 
-                let tx = self.metadata_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    if let Ok(probed) = lofty::read_from_path(&path) {
-                        use lofty::file::AudioFile;
-                        use lofty::prelude::*;
-                        let props = probed.properties();
-                        let duration = props.duration();
+                // Optimization: If track is already verified, use cached metadata
+                if track.status.as_deref() == Some("verified") {
+                    self.sample_rate = track.sampling_rate.unwrap_or(0);
+                    self.bit_depth = track.bit_depth.unwrap_or(0);
+                }
 
-                        let mut genre = None;
-                        let mut label = None;
-                        let mut desc = None;
-                        let mut art = None;
-                        let mut title = None;
-                        let mut artist = None;
-                        let mut album = None;
-
-                        if let Some(tag) = probed.primary_tag() {
-                            title = tag.title().map(|s| s.to_string());
-                            artist = tag.artist().map(|s| s.to_string());
-                            album = tag.album().map(|s| s.to_string());
-                            genre = tag.genre().map(|s| s.to_string());
-                            label = tag
-                                .get_string(&lofty::tag::ItemKey::Label)
-                                .map(|s| s.to_string())
-                                .or_else(|| {
-                                    tag.get_string(&lofty::tag::ItemKey::Publisher)
-                                        .map(|s| s.to_string())
-                                });
-                            desc = tag
-                                .get_string(&lofty::tag::ItemKey::Comment)
-                                .map(|s| s.to_string());
-                            if let Some(picture) = tag.pictures().first() {
-                                art = Some(picture.data().to_vec());
-                            }
-                        }
-
-                        let _ = tx.send(TrackMetadataUpdate {
-                            idx,
-                            sample_rate: props.sample_rate().unwrap_or(0),
-                            channels: props.channels().unwrap_or(0),
-                            bitrate: props.audio_bitrate().unwrap_or(0),
-                            bit_depth: props.bit_depth().unwrap_or(0),
-                            title,
-                            artist,
-                            album,
-                            genre,
-                            label,
-                            description: desc,
-                            cover_art: art,
-                            duration,
-                        });
-                    }
-                });
+                let active_req = Arc::clone(&self.active_metadata_request);
+                let request_id = active_req.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                
+                let _ = self.metadata_worker_tx.try_send((idx, path, request_id));
                 Ok(())
             } else {
                 Err(ChordError::Playback(format!(
@@ -1073,6 +1093,46 @@ impl App {
             }
         } else {
             Err(ChordError::Playback("No file path provided".into()))
+        }
+    }
+
+    fn clean_image_cache(&mut self) {
+        let mut keys_to_keep = std::collections::HashSet::new();
+
+        if let Some(track) = &self.current_track {
+            keys_to_keep.insert(format!("{}_{:?}", track.track_id, self.theme.accent));
+
+            if !self.playback_track_list.is_empty() {
+                let len = self.playback_track_list.len();
+                let idx = self.playing_idx.unwrap_or(0);
+                let next_idx = (idx + 1) % len;
+                let prev_idx = (idx + len - 1) % len;
+
+                if let Some(next_t) = self.playback_track_list.get(next_idx) {
+                    keys_to_keep.insert(format!("{}_{:?}", next_t.track_id, self.theme.accent));
+                }
+                if let Some(prev_t) = self.playback_track_list.get(prev_idx) {
+                    keys_to_keep.insert(format!("{}_{:?}", prev_t.track_id, self.theme.accent));
+                }
+            }
+        }
+
+        let current_radio_key = self.current_track.as_ref()
+            .and_then(|t| if t.status.as_deref() == Some("radio") {
+                Some(format!("radio_{}_{:?}", t.title, self.theme.accent))
+            } else { None });
+
+        self.image_cache.retain(|k, _| {
+            keys_to_keep.contains(k) || (current_radio_key.as_ref() == Some(k))
+        });
+        
+        // If current image is not in cache anymore, clear it
+        if let Some(track) = &self.current_track {
+            let cache_key = format!("{}_{:?}", track.track_id, self.theme.accent);
+            if !self.image_cache.contains_key(&cache_key) && current_radio_key.as_ref() != Some(&cache_key) {
+                self.cached_image = None;
+                self.image_state = None;
+            }
         }
     }
 
@@ -1242,8 +1302,9 @@ mod tests {
     use tokio::sync::mpsc;
 
     fn create_test_app() -> App {
-        let (metadata_tx, metadata_rx) = mpsc::unbounded_channel();
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel();
+        let (metadata_tx, metadata_rx) = mpsc::channel(16);
+        let (worker_tx, _) = mpsc::channel(16);
+        let (refresh_tx, refresh_rx) = mpsc::channel(2);
         let settings = Arc::new(Settings::new().unwrap());
         let index = Arc::new(LibraryIndex::new(&PathBuf::from("/tmp")));
         
@@ -1297,9 +1358,11 @@ mod tests {
             theme: crate::core::config::ThemeConfig::default().to_theme(),
             index,
             metadata_rx,
-            metadata_tx,
+            metadata_worker_tx: worker_tx,
+            active_metadata_request: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             refresh_rx,
             refresh_tx,
+            is_refreshing: false,
             needs_redraw: false,
             audio_clock: 0.0,
             radio_loaded: false,
@@ -1748,7 +1811,7 @@ mod tests {
         // Simulate refresh where B still exists but at a different index
         let t3 = Arc::new(TrackMetadata { track_id: "3".into(), title: "0".into(), ..TrackMetadata::default() });
         let new_tracks = vec![t3, t1, t2]; // Now B is at index 2
-        app.refresh_tx.send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         
@@ -1766,7 +1829,7 @@ mod tests {
 
         // Simulate refresh where A is gone
         let new_tracks = vec![];
-        app.refresh_tx.send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: new_tracks.into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         
@@ -1781,7 +1844,7 @@ mod tests {
         
         // Refresh with updated title
         let t1_new = Arc::new(TrackMetadata { track_id: "1".into(), title: "New Title".into(), ..TrackMetadata::default() });
-        app.refresh_tx.send(RefreshUpdate { all_tracks: vec![t1_new].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: vec![t1_new].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         
@@ -1850,10 +1913,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_update_ignores_wrong_index() {
+        let (tx, rx) = mpsc::channel(16);
         let mut app = create_test_app();
+        app.metadata_rx = rx; // Inject our test receiver
         app.playing_idx = Some(1);
         
-        app.metadata_tx.send(TrackMetadataUpdate {
+        tx.try_send(TrackMetadataUpdate {
             idx: 2, // Wrong index
             sample_rate: 44100,
             channels: 2,
@@ -1870,13 +1935,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_metadata_update_updates_verified_status() {
+        let (tx, rx) = mpsc::channel(16);
         let mut app = create_test_app();
+        app.metadata_rx = rx; // Inject our test receiver
         let t1 = Arc::new(TrackMetadata { track_id: "1".into(), title: "Unverified".into(), status: Some("unverified".into()), ..TrackMetadata::default() });
         app.playback_track_list = Arc::from(vec![t1]);
         app.playing_idx = Some(0);
         app.current_track = Some(app.playback_track_list[0].clone());
 
-        app.metadata_tx.send(TrackMetadataUpdate {
+        tx.try_send(TrackMetadataUpdate {
             idx: 0,
             sample_rate: 44100,
             channels: 2,
@@ -1975,7 +2042,7 @@ mod tests {
         app.all_tracks = Arc::from(vec![t1.clone()]);
         
         let t2 = Arc::new(TrackMetadata { track_id: "2".into(), title: "B".into(), ..TrackMetadata::default() });
-        app.refresh_tx.send(RefreshUpdate { all_tracks: vec![t1, t2].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
+        app.refresh_tx.try_send(RefreshUpdate { all_tracks: vec![t1, t2].into_boxed_slice(), playlists: vec![].into_boxed_slice() }).unwrap();
         
         app.update().await;
         assert_eq!(app.all_tracks.len(), 2);

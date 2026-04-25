@@ -18,10 +18,10 @@ struct StreamingReader<R: Read> {
 
 impl<R: Read> StreamingReader<R> {
     fn new(mut inner: R) -> Self {
-        let mut header_buffer = Vec::with_capacity(1048576); // 1MB buffer for headers
+        let mut header_buffer = Vec::with_capacity(393216); // 384KB buffer for headers
         let mut temp_buf = [0u8; 16384];
-        for _ in 0..64 {
-            // Read up to 1MB in chunks for extremely reliable detection
+        for _ in 0..24 {
+            // Read up to 384KB in chunks for reliable detection
             match inner.read(&mut temp_buf) {
                 Ok(0) => break,
                 Ok(n) => header_buffer.extend_from_slice(&temp_buf[..n]),
@@ -46,6 +46,12 @@ impl<R: Read> Read for StreamingReader<R> {
                 &self.header_buffer[self.header_read_pos..self.header_read_pos + n],
             );
             self.header_read_pos += n;
+            
+            // Optimization: if we just finished the header buffer, free it
+            if self.header_read_pos >= self.header_buffer.len() {
+                self.header_buffer = Vec::new();
+            }
+            
             Ok(n)
         } else {
             let n = self.inner.read(buf)?;
@@ -206,6 +212,7 @@ struct AudioBackend {
     sink: Option<Sink>,
     volume: f32,
     active_request_id: u64,
+    active_request_id_shared: Arc<std::sync::atomic::AtomicU64>,
     is_empty_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     has_error_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
     is_initializing_shared: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -229,7 +236,7 @@ impl AudioPlayer {
         let (tx, rx) = mpsc::channel();
         
         // Use lock-free crossbeam ArrayQueue
-        let sample_queue = Arc::new(ArrayQueue::new(16384));
+        let sample_queue = Arc::new(ArrayQueue::new(8192));
 
         let is_empty = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
         let has_error = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -283,6 +290,9 @@ impl AudioPlayer {
         });
 
         let backend_queue = Arc::clone(&sample_queue);
+        let active_request_id_shared = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let active_request_id_backend = active_request_id_shared.clone();
+        
         std::thread::spawn(move || {
             let mut backend = AudioBackend {
                 stream: None,
@@ -290,6 +300,7 @@ impl AudioPlayer {
                 sink: None,
                 volume: 1.0,
                 active_request_id: 0,
+                active_request_id_shared: active_request_id_backend,
                 is_empty_shared: backend_empty,
                 has_error_shared: backend_error,
                 is_initializing_shared: backend_init,
@@ -346,6 +357,7 @@ impl AudioPlayer {
                         tracing::info!(url = %url, request_id, "AudioCmd::PlayStream received");
                         backend.stop_sink();
                         backend.active_request_id = request_id;
+                        backend.active_request_id_shared.store(request_id, std::sync::atomic::Ordering::Relaxed);
 
                         if backend.is_null {
                             backend.is_empty_shared.store(false, std::sync::atomic::Ordering::Relaxed);
@@ -363,6 +375,7 @@ impl AudioPlayer {
                         let last_error_shared = backend.last_error_shared.clone();
                         let has_error_shared = backend.has_error_shared.clone();
                         let queue_clone = Arc::clone(&backend.sample_queue);
+                        let active_id_shared = backend.active_request_id_shared.clone();
 
                         std::thread::spawn(move || {
                             if let Some(handle) = handle_shared {
@@ -370,6 +383,12 @@ impl AudioPlayer {
                                 let max_retries = 3;
 
                                 while retry_count < max_retries {
+                                    // Check if we're still the active request
+                                    if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id {
+                                        tracing::debug!(request_id, "Radio thread cancelling: stale request");
+                                        return;
+                                    }
+
                                     let res = (|| -> Result<Sink, String> {
                                         let response = reqwest::blocking::Client::builder()
                                             .user_agent(
@@ -388,6 +407,11 @@ impl AudioPlayer {
 
                                         if !response.status().is_success() {
                                             return Err(format!("HTTP {}", response.status()));
+                                        }
+
+                                        // Final check before heavy decoder/sink allocation
+                                        if active_id_shared.load(std::sync::atomic::Ordering::Relaxed) != request_id {
+                                            return Err("Canceled".into());
                                         }
 
                                         let reader = StreamingReader::new(response);
@@ -414,6 +438,7 @@ impl AudioPlayer {
                                             ));
                                             return;
                                         }
+                                        Err(e) if e == "Canceled" => return,
                                         Err(e) => {
                                             retry_count += 1;
                                             if retry_count >= max_retries {

@@ -848,8 +848,6 @@ impl App {
                     }
                 }
 
-                self.clean_image_cache();
-
                 self.needs_redraw = true;
             }
         }
@@ -894,6 +892,7 @@ impl App {
                     .map(|t| t.status.as_deref() == Some("radio"))
                     .unwrap_or(false);
                 if !is_radio {
+                    self.clean_image_cache();
                     let next = self
                         .playing_idx
                         .map(|i| (i + 1) % self.playback_track_list.len())

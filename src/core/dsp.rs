@@ -129,33 +129,9 @@ impl AudioAnalyzer {
                 let mut state = self.state.write().unwrap();
                 state.is_beat = is_beat;
                 
-                // SIMD Spectrum magnitude calculation
-                // Process in chunks of 8 (complex pairs)
-                let spec_len = FFT_SIZE / 2;
-                let chunks = spec_len >> 3; // Bit shift for / 8
-                
-                for c_idx in 0..chunks {
-                    let base = c_idx << 3; // Bit shift for * 8
-                    let mut re = [0.0f32; 8];
-                    let mut im = [0.0f32; 8];
-                    
-                    for i in 0..8 {
-                        re[i] = self.fft_output[base + i].re;
-                        im[i] = self.fft_output[base + i].im;
-                    }
-                    
-                    let vre = f32x8::from(re);
-                    let vim = f32x8::from(im);
-                    let mag_sq = vre * vre + vim * vim;
-                    
-                    // Fast SIMD sqrt if available, or use a bitwise approx
-                    // wide::f32x8 has sqrt()
-                    let mag = mag_sq.sqrt();
-                    state.spectrum[base..base + 8].copy_from_slice(&mag.to_array());
-                }
-
-                // Remainder
-                for i in (chunks << 3)..spec_len {
+                // Update spectrum in place to avoid allocation
+                // Auto-vectorization is often better than manual SIMD for this simple map
+                for i in 0..FFT_SIZE / 2 {
                     let c = self.fft_output[i];
                     state.spectrum[i] = (c.re * c.re + c.im * c.im).sqrt();
                 }

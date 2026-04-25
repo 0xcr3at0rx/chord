@@ -69,11 +69,16 @@ pub fn color_to_rgb(c: Color) -> (u8, u8, u8) {
 pub fn interpolate_color(c1: Color, c2: Color, t: f64) -> Color {
     let (r1, g1, b1) = color_to_rgb(c1);
     let (r2, g2, b2) = color_to_rgb(c2);
-    let t = t.clamp(0.0, 1.0);
+    
+    // Convert t [0.0, 1.0] to fixed point 8.8 (0 to 256)
+    let t_fixed = (t.clamp(0.0, 1.0) * 256.0) as i32;
+    let t_inv = 256 - t_fixed;
+
+    // Fixed point interpolation: (c1 * (256 - t) + c2 * t) >> 8
     Color::Rgb(
-        (r1 as f64 * (1.0 - t) + r2 as f64 * t) as u8,
-        (g1 as f64 * (1.0 - t) + g2 as f64 * t) as u8,
-        (b1 as f64 * (1.0 - t) + b2 as f64 * t) as u8,
+        ((r1 as i32 * t_inv + r2 as i32 * t_fixed) >> 8) as u8,
+        ((g1 as i32 * t_inv + g2 as i32 * t_fixed) >> 8) as u8,
+        ((b1 as i32 * t_inv + b2 as i32 * t_fixed) >> 8) as u8,
     )
 }
 

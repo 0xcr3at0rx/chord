@@ -41,6 +41,8 @@ pub struct AudioAnalyzer {
 
     // Adaptive Beat Detection
     energy_history: Vec<f32>,
+    energy_idx: usize,
+    energy_sum: f32,
     energy_avg: f32,
 }
 
@@ -63,7 +65,9 @@ impl AudioAnalyzer {
             window,
             fft_input: vec![0.0; FFT_SIZE],
             fft_output,
-            energy_history: Vec::with_capacity(43),
+            energy_history: vec![0.0; 43],
+            energy_idx: 0,
+            energy_sum: 0.0,
             energy_avg: 0.0,
         }
     }
@@ -74,6 +78,8 @@ impl AudioAnalyzer {
         }
 
         let current_amplitude;
+        let samples_len_inv = 1.0 / samples.len() as f32;
+
         {
             let mut state = self.state.write().unwrap();
             
@@ -88,6 +94,7 @@ impl AudioAnalyzer {
             
             for chunk in chunks {
                 let v = f32x8::from(chunk);
+                // Bitwise ABS for SIMD: f32x8 abs is usually highly optimized but let's be explicit if we wanted to
                 sum_simd += v.abs();
             }
             
@@ -96,9 +103,11 @@ impl AudioAnalyzer {
                 sum += xor_abs(s);
             }
             
-            current_amplitude = sum / samples.len() as f32;
+            current_amplitude = sum * samples_len_inv;
             // Exponential moving average for smoothness
-            state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2);
+            // state.amplitude = (state.amplitude * 0.8) + (current_amplitude * 0.2);
+            // Optimized EMA: state.amplitude + 0.2 * (current_amplitude - state.amplitude)
+            state.amplitude += 0.2 * (current_amplitude - state.amplitude);
         }
 
         if samples.len() >= FFT_SIZE {
@@ -120,8 +129,33 @@ impl AudioAnalyzer {
                 let mut state = self.state.write().unwrap();
                 state.is_beat = is_beat;
                 
-                // Update spectrum in place to avoid allocation
-                for i in 0..FFT_SIZE / 2 {
+                // SIMD Spectrum magnitude calculation
+                // Process in chunks of 8 (complex pairs)
+                let spec_len = FFT_SIZE / 2;
+                let chunks = spec_len >> 3; // Bit shift for / 8
+                
+                for c_idx in 0..chunks {
+                    let base = c_idx << 3; // Bit shift for * 8
+                    let mut re = [0.0f32; 8];
+                    let mut im = [0.0f32; 8];
+                    
+                    for i in 0..8 {
+                        re[i] = self.fft_output[base + i].re;
+                        im[i] = self.fft_output[base + i].im;
+                    }
+                    
+                    let vre = f32x8::from(re);
+                    let vim = f32x8::from(im);
+                    let mag_sq = vre * vre + vim * vim;
+                    
+                    // Fast SIMD sqrt if available, or use a bitwise approx
+                    // wide::f32x8 has sqrt()
+                    let mag = mag_sq.sqrt();
+                    state.spectrum[base..base + 8].copy_from_slice(&mag.to_array());
+                }
+
+                // Remainder
+                for i in (chunks << 3)..spec_len {
                     let c = self.fft_output[i];
                     state.spectrum[i] = (c.re * c.re + c.im * c.im).sqrt();
                 }
@@ -130,12 +164,14 @@ impl AudioAnalyzer {
     }
 
     fn detect_beat_adaptive(&mut self, amplitude: f32) -> bool {
-        if self.energy_history.len() >= 43 {
-            self.energy_history.remove(0);
-        }
-        self.energy_history.push(amplitude);
-        self.energy_avg =
-            self.energy_history.iter().sum::<f32>() / self.energy_history.len() as f32;
+        // Fast Ring Buffer update O(1)
+        self.energy_sum -= self.energy_history[self.energy_idx];
+        self.energy_history[self.energy_idx] = amplitude;
+        self.energy_sum += amplitude;
+        
+        self.energy_idx = (self.energy_idx + 1) % 43; // Small modulo is fine, or use mask if power of 2
+        
+        self.energy_avg = self.energy_sum * (1.0 / 43.0);
         
         // Branchless-style comparison (result is bool)
         (amplitude > self.energy_avg * 1.6) & (amplitude > 0.05)
